@@ -1,0 +1,13 @@
+{
+    "products": {
+        "prod_1774325483": {
+            "name": "New Product",
+            "price": "25.000đ",
+            "stock": []
+        }
+    },
+    "orders": {},
+    "config": {
+        "payos": {}
+    }
+}
