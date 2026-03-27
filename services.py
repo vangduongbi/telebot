@@ -21,6 +21,9 @@ class ShopService:
     def _new_category_id(self):
         return "cat_" + str(int(time.time()))
 
+    def _contains_capcut(self, name):
+        return "capcut" in str(name or "").casefold()
+
     def list_active_products(self):
         return self.repo.list_active_products()
 
@@ -46,6 +49,17 @@ class ShopService:
             time.sleep(1)
             category_id = self._new_category_id()
         return self.repo.create_category(category_id, category_name)
+
+    def ensure_category(self, name):
+        category_name = str(name or "").strip()
+        if not category_name:
+            raise ValueError("Category name is required")
+        category = self.repo.get_category_by_name(category_name)
+        if category is None:
+            return self.create_category(category_name)
+        if not category["is_active"]:
+            return self.repo.set_category_active(category["id"], True)
+        return category
 
     def assign_product_category(self, product_id, category_id):
         product = self.repo.get_product(product_id)
@@ -117,6 +131,60 @@ class ShopService:
             raise ValueError("Product does not exist")
         supplier_product_id = str(supplier_product_id or "").strip() or None
         return self.repo.update_product_supplier_product_id(product_id, supplier_product_id)
+
+    def update_product_supplier_provider(self, product_id, supplier_provider):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        if supplier_provider not in {None, "sumistore", "capcut_api"}:
+            raise ValueError("Invalid supplier provider")
+        return self.repo.update_product_supplier_provider(product_id, supplier_provider)
+
+    def sync_capcut_products(self, api_products):
+        category = self.ensure_category("Tài khoản CapCut")
+        summary = {"created": 0, "updated": 0, "hidden": 0, "errors": []}
+        seen_supplier_ids = set()
+
+        for item in api_products or []:
+            if not self._contains_capcut(item.get("name")):
+                continue
+            try:
+                supplier_product_id = str(item["id"]).strip()
+                product_name = str(item["name"]).strip()
+                product_price = int(item["price"])
+                if not supplier_product_id or not product_name or product_price <= 0:
+                    raise ValueError("Invalid CapCut product payload")
+            except Exception as exc:
+                summary["errors"].append(str(exc))
+                continue
+
+            seen_supplier_ids.add(supplier_product_id)
+            existing = self.repo.get_product_by_supplier_mapping("capcut_api", supplier_product_id)
+            if existing is None:
+                product = self.create_product(product_name, product_price)
+                self.update_product_fulfillment_mode(product["id"], "supplier_api")
+                self.update_product_supplier_provider(product["id"], "capcut_api")
+                self.update_product_supplier_product_id(product["id"], supplier_product_id)
+                self.assign_product_category(product["id"], category["id"])
+                summary["created"] += 1
+                continue
+
+            self.update_product_name(existing["id"], product_name)
+            self.update_product_fulfillment_mode(existing["id"], "supplier_api")
+            self.update_product_supplier_provider(existing["id"], "capcut_api")
+            self.update_product_supplier_product_id(existing["id"], supplier_product_id)
+            self.assign_product_category(existing["id"], category["id"])
+            if not existing["is_active"]:
+                self.reactivate_product(existing["id"])
+            summary["updated"] += 1
+
+        for product in self.repo.list_products_by_supplier_provider("capcut_api"):
+            supplier_product_id = product["supplier_product_id"]
+            if supplier_product_id and supplier_product_id not in seen_supplier_ids and product["is_active"]:
+                self.deactivate_product(product["id"])
+                summary["hidden"] += 1
+
+        return summary
 
     def update_product_sales_mode(self, product_id, sales_mode):
         product = self.repo.get_product(product_id)

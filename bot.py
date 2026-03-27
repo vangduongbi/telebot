@@ -13,6 +13,7 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 import migration
 import repositories
 import services
+from capcut_api import CapcutApiClient, CapcutApiError
 from supplier_api import SupplierApiClient, SupplierApiError
 
 
@@ -23,6 +24,8 @@ DATA_FILE = "data.json"
 DB_PATH = "shop.db"
 SUPPLIER_BASE_URL = "https://sumistore.me/api"
 SUPPLIER_API_KEY = "TAPI-XD2CGJRB398MTAFBDYHO"
+CAPCUT_BASE_URL = "http://node12.zampto.net:20291/api"
+CAPCUT_API_KEY = "sk_4cc3773eeab08fc6c32aee2d4e0461f67b6a206077b5f818"
 
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -104,6 +107,24 @@ def get_supplier_client():
     return SupplierApiClient(SUPPLIER_BASE_URL, SUPPLIER_API_KEY)
 
 
+def get_capcut_client():
+    return CapcutApiClient(CAPCUT_BASE_URL, CAPCUT_API_KEY)
+
+
+def get_supplier_provider(product_like, fulfillment_mode=None):
+    if product_like is None:
+        return None
+    provider = product_like["supplier_provider"] if "supplier_provider" in product_like.keys() else None
+    if provider:
+        return provider
+    resolved_mode = fulfillment_mode
+    if resolved_mode is None:
+        resolved_mode = product_like["fulfillment_mode"] if "fulfillment_mode" in product_like.keys() else None
+    if resolved_mode == "supplier_api":
+        return "sumistore"
+    return None
+
+
 def get_supplier_unit_price(product_detail):
     product = (product_detail or {}).get("product") or {}
     for key in ("sale_price", "special_price", "price", "base_price"):
@@ -111,6 +132,23 @@ def get_supplier_unit_price(product_detail):
         if value is not None:
             return int(value)
     raise SupplierApiError("Supplier product price is unavailable")
+
+
+def get_capcut_product(products_response, product_id):
+    for product in (products_response or {}).get("products") or []:
+        if str(product.get("id") or "").strip() == str(product_id or "").strip():
+            return product
+    raise CapcutApiError("CapCut product is unavailable")
+
+
+def get_capcut_unit_price(product_detail):
+    value = product_detail.get("price")
+    if value is None:
+        raise CapcutApiError("CapCut product price is unavailable")
+    price = int(value)
+    if price <= 0:
+        raise CapcutApiError("CapCut product price is invalid")
+    return price
 
 
 def extract_supplier_accounts(purchase_response):
@@ -134,6 +172,17 @@ def extract_supplier_accounts(purchase_response):
     return [account for account in accounts if account]
 
 
+def extract_capcut_accounts(purchase_response):
+    order = (purchase_response or {}).get("order") or {}
+    accounts = []
+    for row in order.get("accounts") or []:
+        if isinstance(row, dict):
+            accounts.append(" | ".join(str(value).strip() for value in row.values()))
+        elif str(row).strip():
+            accounts.append(str(row).strip())
+    return [account for account in accounts if account]
+
+
 def get_supplier_available_units(supplier_product_id, client=None, balance_response=None):
     if not supplier_product_id:
         return 0
@@ -146,6 +195,23 @@ def get_supplier_available_units(supplier_product_id, client=None, balance_respo
         balance_response = balance_response or client.get_balance()
         balance = int(balance_response.get("balance") or 0)
         return max(balance // unit_price, 0)
+    except Exception:
+        return 0
+
+
+def get_capcut_available_units(supplier_product_id, client=None, balance_response=None, products_response=None):
+    if not supplier_product_id:
+        return 0
+    try:
+        client = client or get_capcut_client()
+        products_response = products_response or client.get_products()
+        product = get_capcut_product(products_response, supplier_product_id)
+        unit_price = get_capcut_unit_price(product)
+        balance_response = balance_response or client.get_balance()
+        balance = int(balance_response.get("balance") or 0)
+        balance_units = max(balance // unit_price, 0)
+        api_stock = max(int(product.get("stock") or 0), 0)
+        return min(balance_units, api_stock)
     except Exception:
         return 0
 
@@ -267,10 +333,14 @@ def get_runtime_product(product_id):
     counts = product_repository.count_stock_by_status(product_id)
     fulfillment_mode = product["fulfillment_mode"] if "fulfillment_mode" in product.keys() else "local_stock"
     supplier_product_id = product["supplier_product_id"] if "supplier_product_id" in product.keys() else None
+    supplier_provider = get_supplier_provider(product, fulfillment_mode)
     sales_mode = product["sales_mode"] if "sales_mode" in product.keys() else "normal"
     available = counts["available"]
     if fulfillment_mode == "supplier_api":
-        available = get_supplier_available_units(supplier_product_id)
+        if supplier_provider == "capcut_api":
+            available = get_capcut_available_units(supplier_product_id)
+        else:
+            available = get_supplier_available_units(supplier_product_id)
     return {
         "id": product["id"],
         "name": product["name"],
@@ -283,6 +353,7 @@ def get_runtime_product(product_id):
         "total": counts["total"],
         "fulfillment_mode": fulfillment_mode,
         "supplier_product_id": supplier_product_id,
+        "supplier_provider": supplier_provider,
         "sales_mode": sales_mode,
         "active": bool(product["is_active"]) if "is_active" in product.keys() else True,
     }
@@ -293,29 +364,54 @@ def list_runtime_products(category_id=None):
     result = []
     supplier_client = None
     supplier_balance = None
+    capcut_client = None
+    capcut_balance = None
+    capcut_products = None
     for row in rows:
         counts = product_repository.count_stock_by_status(row["id"])
         fulfillment_mode = row["fulfillment_mode"] if "fulfillment_mode" in row.keys() else "local_stock"
         supplier_product_id = row["supplier_product_id"] if "supplier_product_id" in row.keys() else None
+        supplier_provider = get_supplier_provider(row, fulfillment_mode)
         sales_mode = row["sales_mode"] if "sales_mode" in row.keys() else "normal"
         available = counts["available"]
         if fulfillment_mode == "supplier_api":
-            if supplier_client is None:
-                try:
-                    supplier_client = get_supplier_client()
-                    supplier_balance = supplier_client.get_balance()
-                except Exception:
-                    supplier_client = False
-                    supplier_balance = None
-            available = (
-                get_supplier_available_units(
-                    supplier_product_id,
-                    client=supplier_client if supplier_client is not False else None,
-                    balance_response=supplier_balance,
+            if supplier_provider == "capcut_api":
+                if capcut_client is None:
+                    try:
+                        capcut_client = get_capcut_client()
+                        capcut_balance = capcut_client.get_balance()
+                        capcut_products = capcut_client.get_products()
+                    except Exception:
+                        capcut_client = False
+                        capcut_balance = None
+                        capcut_products = None
+                available = (
+                    get_capcut_available_units(
+                        supplier_product_id,
+                        client=capcut_client if capcut_client is not False else None,
+                        balance_response=capcut_balance,
+                        products_response=capcut_products,
+                    )
+                    if capcut_client is not False
+                    else 0
                 )
-                if supplier_client is not False
-                else 0
-            )
+            else:
+                if supplier_client is None:
+                    try:
+                        supplier_client = get_supplier_client()
+                        supplier_balance = supplier_client.get_balance()
+                    except Exception:
+                        supplier_client = False
+                        supplier_balance = None
+                available = (
+                    get_supplier_available_units(
+                        supplier_product_id,
+                        client=supplier_client if supplier_client is not False else None,
+                        balance_response=supplier_balance,
+                    )
+                    if supplier_client is not False
+                    else 0
+                )
         result.append(
             {
                 "id": row["id"],
@@ -329,6 +425,7 @@ def list_runtime_products(category_id=None):
                 "total": counts["total"],
                 "fulfillment_mode": fulfillment_mode,
                 "supplier_product_id": supplier_product_id,
+                "supplier_provider": supplier_provider,
                 "sales_mode": sales_mode,
                 "active": bool(row["is_active"]) if "is_active" in row.keys() else True,
             }
@@ -348,11 +445,32 @@ def get_runtime_category(category_id):
     return product_repository.get_category(category_id)
 
 
+def sync_capcut_products_from_api():
+    client = get_capcut_client()
+    products_response = client.get_products()
+    products = products_response.get("products") or []
+    return shop_service.sync_capcut_products(products)
+
+
 def check_supplier_purchase_ready(runtime_product, qty):
     if runtime_product.get("fulfillment_mode") != "supplier_api":
         return None
     if not runtime_product.get("supplier_product_id"):
         raise SupplierApiError("Supplier product is not configured")
+    provider = runtime_product.get("supplier_provider") or "sumistore"
+
+    if provider == "capcut_api":
+        client = get_capcut_client()
+        products_response = client.get_products()
+        product_detail = get_capcut_product(products_response, runtime_product["supplier_product_id"])
+        if int(product_detail.get("stock") or 0) < qty:
+            raise CapcutApiError("CapCut stock is not enough")
+        balance = client.get_balance()
+        required_amount = get_capcut_unit_price(product_detail) * qty
+        current_balance = int(balance.get("balance") or 0)
+        if current_balance < required_amount:
+            raise CapcutApiError("CapCut balance is not enough")
+        return product_detail
 
     client = get_supplier_client()
     detail = client.get_product_detail(runtime_product["supplier_product_id"])
@@ -378,9 +496,15 @@ def complete_paid_order(chat_id, order_id, payos_ref, amount_paid):
 
     if runtime_product.get("fulfillment_mode") == "supplier_api":
         try:
-            client = get_supplier_client()
-            purchase = client.buy_product(runtime_product["supplier_product_id"], order["qty"])
-            accounts = extract_supplier_accounts(purchase)
+            provider = runtime_product.get("supplier_provider") or "sumistore"
+            if provider == "capcut_api":
+                client = get_capcut_client()
+                purchase = client.buy_product(runtime_product["supplier_product_id"], order["qty"])
+                accounts = extract_capcut_accounts(purchase)
+            else:
+                client = get_supplier_client()
+                purchase = client.buy_product(runtime_product["supplier_product_id"], order["qty"])
+                accounts = extract_supplier_accounts(purchase)
             if not accounts:
                 raise SupplierApiError("Supplier returned no accounts")
             delivered = shop_service.mark_supplier_payment_paid(order_id, payos_ref, amount_paid, accounts)
@@ -480,6 +604,7 @@ def show_admin_menu(chat_id, message_id=None):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("➕ Thêm sản phẩm mới", callback_data="admin_create_prod"))
     markup.add(InlineKeyboardButton("🗂️ Quản lý category", callback_data="admin_manage_categories"))
+    markup.add(InlineKeyboardButton("🔄 Sync CapCut", callback_data="admin_sync_capcut"))
     markup.add(InlineKeyboardButton("⚙️ Cài đặt PayOS", callback_data="admin_config_payos"))
     markup.add(InlineKeyboardButton("🔎 Tra cứu đơn", callback_data="admin_lookup_order"))
 
@@ -987,6 +1112,21 @@ def callback_query(call):
 
     if call.data == "admin_manage_categories":
         show_admin_category_menu(chat_id, message_id=msg_id)
+        return
+
+    if call.data == "admin_sync_capcut":
+        try:
+            summary = sync_capcut_products_from_api()
+            bot.send_message(
+                chat_id,
+                "✅ Đồng bộ CapCut hoàn tất\n"
+                f"Đã tạo: {summary['created']}\n"
+                f"Đã cập nhật: {summary['updated']}\n"
+                f"Đã ẩn: {summary['hidden']}\n"
+                f"Lỗi: {len(summary['errors'])}",
+            )
+        except Exception as exc:
+            bot.send_message(chat_id, f"❌ Đồng bộ CapCut thất bại: {exc}")
         return
 
     if call.data.startswith("admin_category_"):

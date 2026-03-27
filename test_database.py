@@ -120,6 +120,7 @@ class DatabaseSchemaTests(SQLiteTestCase):
                     "category_id",
                     "fulfillment_mode",
                     "supplier_product_id",
+                    "supplier_provider",
                     "sales_mode",
                     "is_active",
                     "created_at",
@@ -244,6 +245,37 @@ class ProductRepositoryTests(SQLiteTestCase):
         self.assertEqual(row["id"], "prod_1")
         self.assertEqual(row["name"], "Product A")
         self.assertEqual(row["price"], 100000)
+        self.assertIsNone(row["supplier_provider"])
+
+    def test_update_product_supplier_provider(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_1", "Product A", 100000)
+
+        row = repo.update_product_supplier_provider("prod_1", "capcut_api")
+
+        self.assertEqual(row["supplier_provider"], "capcut_api")
+
+    def test_get_product_by_supplier_mapping(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_1", "Product A", 100000)
+        repo.update_product_supplier_provider("prod_1", "capcut_api")
+        repo.update_product_supplier_product_id("prod_1", "cc_1")
+
+        row = repo.get_product_by_supplier_mapping("capcut_api", "cc_1")
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["id"], "prod_1")
+
+    def test_list_products_by_supplier_provider(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_1", "CapCut A", 100000)
+        repo.create_product("prod_2", "CapCut B", 120000)
+        repo.update_product_supplier_provider("prod_1", "capcut_api")
+        repo.update_product_supplier_provider("prod_2", "sumistore")
+
+        rows = repo.list_products_by_supplier_provider("capcut_api")
+
+        self.assertEqual([row["id"] for row in rows], ["prod_1"])
 
     def test_add_stock_items_persists_one_row_per_content(self):
         repo = repositories.Repository(self.db_path)
