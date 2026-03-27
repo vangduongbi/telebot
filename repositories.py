@@ -81,6 +81,22 @@ class Repository:
         finally:
             conn.close()
 
+    def get_category_by_name(self, name):
+        conn = database.get_connection(self.db_path)
+        try:
+            return conn.execute(
+                """
+                SELECT *
+                FROM categories
+                WHERE name = ? AND is_deleted = 0
+                ORDER BY id
+                LIMIT 1
+                """,
+                (name,),
+            ).fetchone()
+        finally:
+            conn.close()
+
     def update_category_name(self, category_id, name):
         now = self._now()
         with database.transaction(self.db_path) as conn:

@@ -296,6 +296,66 @@ class CategoryServiceTests(SQLiteServiceTestCase):
         self.assertNotIn(category["id"], manageable_ids)
 
 
+class CapcutSyncServiceTests(SQLiteServiceTestCase):
+    def test_sync_capcut_products_creates_category_and_new_products(self):
+        service = services.ShopService(self.db_path)
+
+        summary = service.sync_capcut_products(
+            [
+                {"id": "cc_1", "name": "CapCut Pro 1 tháng", "price": 30000, "stock": 40},
+                {"id": "x_1", "name": "Netflix 1 tháng", "price": 50000, "stock": 5},
+            ]
+        )
+
+        categories = service.list_active_categories()
+        category = next(row for row in categories if row["name"] == "Tài khoản CapCut")
+        products = service.list_products_for_category(category["id"])
+
+        self.assertEqual(summary["created"], 1)
+        self.assertEqual(summary["updated"], 0)
+        self.assertEqual(summary["hidden"], 0)
+        self.assertEqual(len(summary["errors"]), 0)
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0]["name"], "CapCut Pro 1 tháng")
+        self.assertEqual(products[0]["price"], 30000)
+        self.assertEqual(products[0]["fulfillment_mode"], "supplier_api")
+        self.assertEqual(products[0]["supplier_provider"], "capcut_api")
+        self.assertEqual(products[0]["supplier_product_id"], "cc_1")
+
+    def test_sync_capcut_products_updates_name_but_keeps_existing_price(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Old CapCut Name", "99.000đ")
+        service.update_product_fulfillment_mode(product["id"], "supplier_api")
+        service.update_product_supplier_provider(product["id"], "capcut_api")
+        service.update_product_supplier_product_id(product["id"], "cc_1")
+
+        summary = service.sync_capcut_products(
+            [{"id": "cc_1", "name": "CapCut Premium 1 tháng", "price": 30000, "stock": 40}]
+        )
+
+        stored = repositories.Repository(self.db_path).get_product(product["id"])
+        self.assertEqual(summary["created"], 0)
+        self.assertEqual(summary["updated"], 1)
+        self.assertEqual(stored["name"], "CapCut Premium 1 tháng")
+        self.assertEqual(stored["price"], 99000)
+        self.assertEqual(stored["is_active"], 1)
+
+    def test_sync_capcut_products_hides_removed_products(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("CapCut Old", "30.000đ")
+        service.update_product_fulfillment_mode(product["id"], "supplier_api")
+        service.update_product_supplier_provider(product["id"], "capcut_api")
+        service.update_product_supplier_product_id(product["id"], "cc_old")
+
+        summary = service.sync_capcut_products(
+            [{"id": "cc_1", "name": "CapCut New", "price": 35000, "stock": 10}]
+        )
+
+        stored = repositories.Repository(self.db_path).get_product(product["id"])
+        self.assertEqual(summary["hidden"], 1)
+        self.assertEqual(stored["is_active"], 0)
+
+
 class AppConfigServiceTests(SQLiteServiceTestCase):
     def test_set_and_get_payos_config(self):
         service = services.ShopService(self.db_path)
