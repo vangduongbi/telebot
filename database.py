@@ -30,6 +30,7 @@ def init_db(db_path="shop.db"):
                 category_id TEXT,
                 fulfillment_mode TEXT NOT NULL DEFAULT 'local_stock',
                 supplier_product_id TEXT,
+                supplier_provider TEXT,
                 sales_mode TEXT NOT NULL DEFAULT 'normal',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
@@ -116,6 +117,10 @@ def init_db(db_path="shop.db"):
         if "supplier_product_id" not in product_columns:
             conn.execute(
                 "ALTER TABLE products ADD COLUMN supplier_product_id TEXT"
+            )
+        if "supplier_provider" not in product_columns:
+            conn.execute(
+                "ALTER TABLE products ADD COLUMN supplier_provider TEXT"
             )
         if "sales_mode" not in product_columns:
             conn.execute(

@@ -217,6 +217,16 @@ class AdminProductServiceTests(SQLiteServiceTestCase):
         self.assertEqual(stored["sales_mode"], "contact_only")
 
 
+    def test_update_product_supplier_provider(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("CapCut Product", "30.000Ã„â€˜")
+
+        service.update_product_supplier_provider(product["id"], "capcut_api")
+
+        stored = repositories.Repository(self.db_path).get_product(product["id"])
+        self.assertEqual(stored["supplier_provider"], "capcut_api")
+
+
 class CategoryServiceTests(SQLiteServiceTestCase):
     def test_create_category_and_assign_product(self):
         service = services.ShopService(self.db_path)

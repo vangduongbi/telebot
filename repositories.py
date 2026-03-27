@@ -17,8 +17,8 @@ class Repository:
                 """
                 INSERT INTO products (
                     id, name, price, category_id, fulfillment_mode,
-                    supplier_product_id, sales_mode, is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, 'local_stock', NULL, 'normal', 1, ?, ?)
+                    supplier_product_id, supplier_provider, sales_mode, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, NULL, 'local_stock', NULL, NULL, 'normal', 1, ?, ?)
                 """,
                 (product_id, name, int(price), now, now),
             )
@@ -258,6 +258,51 @@ class Repository:
                 "SELECT * FROM products WHERE id = ?",
                 (product_id,),
             ).fetchone()
+
+    def update_product_supplier_provider(self, product_id, supplier_provider):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE products
+                SET supplier_provider = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (supplier_provider, now, product_id),
+            )
+            return conn.execute(
+                "SELECT * FROM products WHERE id = ?",
+                (product_id,),
+            ).fetchone()
+
+    def get_product_by_supplier_mapping(self, supplier_provider, supplier_product_id):
+        conn = database.get_connection(self.db_path)
+        try:
+            return conn.execute(
+                """
+                SELECT *
+                FROM products
+                WHERE supplier_provider = ? AND supplier_product_id = ?
+                """,
+                (supplier_provider, supplier_product_id),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def list_products_by_supplier_provider(self, supplier_provider):
+        conn = database.get_connection(self.db_path)
+        try:
+            return conn.execute(
+                """
+                SELECT *
+                FROM products
+                WHERE supplier_provider = ?
+                ORDER BY id
+                """,
+                (supplier_provider,),
+            ).fetchall()
+        finally:
+            conn.close()
 
     def update_product_sales_mode(self, product_id, sales_mode):
         now = self._now()

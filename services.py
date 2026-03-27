@@ -118,6 +118,14 @@ class ShopService:
         supplier_product_id = str(supplier_product_id or "").strip() or None
         return self.repo.update_product_supplier_product_id(product_id, supplier_product_id)
 
+    def update_product_supplier_provider(self, product_id, supplier_provider):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        if supplier_provider not in {None, "sumistore", "capcut_api"}:
+            raise ValueError("Invalid supplier provider")
+        return self.repo.update_product_supplier_provider(product_id, supplier_provider)
+
     def update_product_sales_mode(self, product_id, sales_mode):
         product = self.repo.get_product(product_id)
         if product is None:
