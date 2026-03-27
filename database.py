@@ -14,13 +14,27 @@ def init_db(db_path="shop.db"):
     try:
         conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS categories (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS products (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 price INTEGER NOT NULL,
+                category_id TEXT,
+                fulfillment_mode TEXT NOT NULL DEFAULT 'local_stock',
+                supplier_product_id TEXT,
+                sales_mode TEXT NOT NULL DEFAULT 'normal',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                FOREIGN KEY (category_id) REFERENCES categories(id)
             );
 
             CREATE TABLE IF NOT EXISTS stock_items (
@@ -87,6 +101,34 @@ def init_db(db_path="shop.db"):
             );
             """
         )
+        product_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(products)").fetchall()
+        }
+        if "category_id" not in product_columns:
+            conn.execute(
+                "ALTER TABLE products ADD COLUMN category_id TEXT REFERENCES categories(id)"
+            )
+        if "fulfillment_mode" not in product_columns:
+            conn.execute(
+                "ALTER TABLE products ADD COLUMN fulfillment_mode TEXT NOT NULL DEFAULT 'local_stock'"
+            )
+        if "supplier_product_id" not in product_columns:
+            conn.execute(
+                "ALTER TABLE products ADD COLUMN supplier_product_id TEXT"
+            )
+        if "sales_mode" not in product_columns:
+            conn.execute(
+                "ALTER TABLE products ADD COLUMN sales_mode TEXT NOT NULL DEFAULT 'normal'"
+            )
+        category_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(categories)").fetchall()
+        }
+        if "is_deleted" not in category_columns:
+            conn.execute(
+                "ALTER TABLE categories ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"
+            )
         conn.commit()
     finally:
         conn.close()

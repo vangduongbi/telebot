@@ -91,6 +91,37 @@ class PaymentSuccessTests(SQLiteServiceTestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(delivered["accounts"], [items[0]["delivered_content"]])
 
+    def test_mark_supplier_paid_creates_delivered_items_without_local_stock(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("GPT Supplier", "100.000Ä‘")
+        service.update_product_fulfillment_mode(product["id"], "supplier_api")
+        service.update_product_supplier_product_id(product["id"], "SP-GEF55PBV")
+
+        order = service.create_pending_order(
+            user_id=10,
+            username="@buyer",
+            full_name="Buyer",
+            product_id=product["id"],
+            qty=1,
+        )
+
+        delivered = service.mark_supplier_payment_paid(
+            order_id=order["id"],
+            payos_ref="999888",
+            amount_paid=100000,
+            delivered_accounts=["mail@example.com|pass"],
+        )
+
+        repo = repositories.Repository(self.db_path)
+        order_row = repo.get_order(order["id"])
+        counts = repo.count_stock_by_status(product["id"])
+        items = repo.list_order_items(order["id"])
+
+        self.assertEqual(order_row["status"], "delivered")
+        self.assertEqual(counts["sold"], 1)
+        self.assertEqual(items[0]["delivered_content"], "mail@example.com|pass")
+        self.assertEqual(delivered["accounts"], ["mail@example.com|pass"])
+
 
 class PaymentFailureTests(SQLiteServiceTestCase):
     def test_cancel_pending_order_releases_reserved_stock(self):
@@ -164,6 +195,95 @@ class AdminProductServiceTests(SQLiteServiceTestCase):
 
         active_ids = [row["id"] for row in service.list_active_products()]
         self.assertNotIn(product["id"], active_ids)
+
+    def test_update_product_fulfillment_mode_and_supplier_product_id(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Supplier Product", "30.000Ä‘")
+
+        service.update_product_fulfillment_mode(product["id"], "supplier_api")
+        service.update_product_supplier_product_id(product["id"], "SP-GEF55PBV")
+
+        stored = repositories.Repository(self.db_path).get_product(product["id"])
+        self.assertEqual(stored["fulfillment_mode"], "supplier_api")
+        self.assertEqual(stored["supplier_product_id"], "SP-GEF55PBV")
+
+    def test_update_product_sales_mode(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Contact Product", "30.000Ä‘")
+
+        service.update_product_sales_mode(product["id"], "contact_only")
+
+        stored = repositories.Repository(self.db_path).get_product(product["id"])
+        self.assertEqual(stored["sales_mode"], "contact_only")
+
+
+class CategoryServiceTests(SQLiteServiceTestCase):
+    def test_create_category_and_assign_product(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("GPT Plus", "100.000đ")
+
+        category = service.create_category("Tài khoản ChatGPT")
+        service.assign_product_category(product["id"], category["id"])
+
+        products = service.list_products_for_category(category["id"])
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0]["id"], product["id"])
+
+    def test_list_active_categories_returns_created_category(self):
+        service = services.ShopService(self.db_path)
+
+        category = service.create_category("Google AI")
+        categories = service.list_active_categories()
+
+        self.assertTrue(any(row["id"] == category["id"] for row in categories))
+
+    def test_list_products_for_category_none_returns_all_active_products(self):
+        service = services.ShopService(self.db_path)
+        first = service.create_product("A", "10.000đ")
+        second = service.create_product("B", "20.000đ")
+
+        products = service.list_products_for_category(None)
+
+        product_ids = {row["id"] for row in products}
+        self.assertIn(first["id"], product_ids)
+        self.assertIn(second["id"], product_ids)
+
+
+    def test_update_category_name_and_toggle_active(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Old Name")
+
+        service.update_category_name(category["id"], "New Name")
+        service.set_category_active(category["id"], False)
+
+        active_ids = {row["id"] for row in service.list_active_categories()}
+        manageable = service.list_manageable_categories()
+
+        self.assertNotIn(category["id"], active_ids)
+        self.assertTrue(
+            any(
+                row["id"] == category["id"]
+                and row["name"] == "New Name"
+                and row["is_active"] == 0
+                for row in manageable
+            )
+        )
+
+    def test_delete_category_clears_product_assignments_and_hides_category(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("GPT Plus", "100.000Ä‘")
+        category = service.create_category("ChatGPT")
+        service.assign_product_category(product["id"], category["id"])
+
+        service.delete_category(category["id"])
+
+        stored_product = repositories.Repository(self.db_path).get_product(product["id"])
+        active_ids = {row["id"] for row in service.list_active_categories()}
+        manageable_ids = {row["id"] for row in service.list_manageable_categories()}
+
+        self.assertIsNone(stored_product["category_id"])
+        self.assertNotIn(category["id"], active_ids)
+        self.assertNotIn(category["id"], manageable_ids)
 
 
 class AppConfigServiceTests(SQLiteServiceTestCase):

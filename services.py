@@ -18,8 +18,63 @@ class ShopService:
     def _new_product_id(self):
         return "prod_" + str(int(time.time()))
 
+    def _new_category_id(self):
+        return "cat_" + str(int(time.time()))
+
     def list_active_products(self):
         return self.repo.list_active_products()
+
+    def list_inactive_products(self):
+        return self.repo.list_inactive_products()
+
+    def list_products_for_category(self, category_id):
+        return self.repo.list_products_by_category(category_id)
+
+    def list_active_categories(self):
+        return self.repo.list_active_categories()
+
+    def list_manageable_categories(self):
+        return self.repo.list_manageable_categories()
+
+    def create_category(self, name):
+        category_name = str(name or "").strip()
+        if not category_name:
+            raise ValueError("Category name is required")
+
+        category_id = self._new_category_id()
+        while self.repo.get_category(category_id) is not None:
+            time.sleep(1)
+            category_id = self._new_category_id()
+        return self.repo.create_category(category_id, category_name)
+
+    def assign_product_category(self, product_id, category_id):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        if category_id is not None and self.repo.get_category(category_id) is None:
+            raise ValueError("Category does not exist")
+        return self.repo.set_product_category(product_id, category_id)
+
+    def update_category_name(self, category_id, name):
+        category_name = str(name or "").strip()
+        if not category_name:
+            raise ValueError("Category name is required")
+        category = self.repo.get_category(category_id)
+        if category is None:
+            raise ValueError("Category does not exist")
+        return self.repo.update_category_name(category_id, category_name)
+
+    def set_category_active(self, category_id, is_active):
+        category = self.repo.get_category(category_id)
+        if category is None:
+            raise ValueError("Category does not exist")
+        return self.repo.set_category_active(category_id, is_active)
+
+    def delete_category(self, category_id):
+        category = self.repo.get_category(category_id)
+        if category is None:
+            raise ValueError("Category does not exist")
+        self.repo.delete_category(category_id)
 
     def create_product(self, name, price):
         product_name = str(name or "").strip()
@@ -48,6 +103,29 @@ class ShopService:
             raise ValueError("Product does not exist")
         return self.repo.update_product_price(product_id, migration.parse_price_to_int(price))
 
+    def update_product_fulfillment_mode(self, product_id, fulfillment_mode):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        if fulfillment_mode not in {"local_stock", "supplier_api"}:
+            raise ValueError("Invalid fulfillment mode")
+        return self.repo.update_product_fulfillment_mode(product_id, fulfillment_mode)
+
+    def update_product_supplier_product_id(self, product_id, supplier_product_id):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        supplier_product_id = str(supplier_product_id or "").strip() or None
+        return self.repo.update_product_supplier_product_id(product_id, supplier_product_id)
+
+    def update_product_sales_mode(self, product_id, sales_mode):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        if sales_mode not in {"normal", "contact_only"}:
+            raise ValueError("Invalid sales mode")
+        return self.repo.update_product_sales_mode(product_id, sales_mode)
+
     def add_product_stock(self, product_id, stock_text):
         product = self.repo.get_product(product_id)
         if product is None:
@@ -64,6 +142,12 @@ class ShopService:
         if product is None:
             raise ValueError("Product does not exist")
         return self.repo.deactivate_product(product_id)
+
+    def reactivate_product(self, product_id):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        return self.repo.reactivate_product(product_id)
 
     def get_payos_config(self):
         rows = self.repo.get_config_values("payos.")
@@ -94,6 +178,26 @@ class ShopService:
             "accounts": [row["delivered_content"] for row in items],
         }
 
+    def list_orders_for_user(self, user_id):
+        result = []
+        for order in self.repo.list_orders_for_user(user_id):
+            product = self.repo.get_product(order["product_id"])
+            result.append(
+                {
+                    "order": order,
+                    "product": product,
+                }
+            )
+        return result
+
+    def get_user_order_details(self, user_id, order_id):
+        details = self.get_order_details(order_id)
+        if details is None:
+            return None
+        if details["order"]["user_id"] != user_id:
+            return None
+        return details
+
     def create_pending_order(self, user_id, username, full_name, product_id, qty):
         if qty <= 0:
             raise ValueError("Quantity must be greater than zero")
@@ -101,6 +205,20 @@ class ShopService:
         product = self.repo.get_product(product_id)
         if product is None:
             raise ValueError("Product does not exist")
+
+        if product["fulfillment_mode"] == "supplier_api":
+            return self.repo.create_order(
+                order_id=self._new_order_id(),
+                order_code=self._new_order_code(),
+                user_id=user_id,
+                username=username,
+                full_name=full_name,
+                product_id=product_id,
+                qty=qty,
+                unit_price=product["price"],
+                total_amount=product["price"] * qty,
+                reserved_stock_item_ids=[],
+            )
 
         available_stock = self.repo.list_available_stock(product_id, qty)
         if len(available_stock) < qty:
@@ -134,6 +252,27 @@ class ShopService:
         return {
             "order_id": order_id,
             "accounts": [row["content"] for row in reserved_items],
+        }
+
+    def mark_supplier_payment_paid(self, order_id, payos_ref, amount_paid, delivered_accounts):
+        order = self.repo.get_order(order_id)
+        if order is None:
+            raise ValueError("Order does not exist")
+        if order["status"] != "pending_payment":
+            raise ValueError("Order is not pending payment")
+        if not delivered_accounts:
+            raise ValueError("Delivered accounts are required")
+
+        self.repo.complete_supplier_paid_order(
+            order_id=order_id,
+            payos_ref=payos_ref,
+            amount_paid=amount_paid,
+            product_id=order["product_id"],
+            delivered_accounts=list(delivered_accounts),
+        )
+        return {
+            "order_id": order_id,
+            "accounts": list(delivered_accounts),
         }
 
     def cancel_pending_order(self, order_id, reason):
