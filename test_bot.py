@@ -108,6 +108,41 @@ class FakeSupplierApiClient:
         return self.buy_response
 
 
+class FakeCapcutApiClient:
+    products_response = {
+        "success": True,
+        "products": [
+            {"id": "cc_1", "name": "CapCut Pro", "price": 30000, "stock": 10},
+        ],
+    }
+    balance_response = {"success": True, "balance": 100000}
+    buy_response = {
+        "success": True,
+        "order": {"accounts": ["capcut@example.com|pass"]},
+    }
+    error = None
+
+    def __init__(self, base_url, api_key, timeout=10):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def get_products(self):
+        if self.error:
+            raise self.error
+        return self.products_response
+
+    def get_balance(self):
+        if self.error:
+            raise self.error
+        return self.balance_response
+
+    def buy_product(self, product_id, quantity):
+        if self.error:
+            raise self.error
+        return self.buy_response
+
+
 class DummyThread:
     def __init__(self, target=None, args=(), daemon=None):
         self.target = target
@@ -209,6 +244,7 @@ class SupplierProcessPurchaseTests(unittest.TestCase):
     def setUp(self):
         FakePayOS.instances.clear()
         FakeSupplierApiClient.error = None
+        FakeCapcutApiClient.error = None
         FakeSupplierApiClient.detail_response = {
             "success": True,
             "product": {
@@ -223,6 +259,17 @@ class SupplierProcessPurchaseTests(unittest.TestCase):
         FakeSupplierApiClient.buy_response = {
             "success": True,
             "raw_accounts": ["mail@example.com|pass"],
+        }
+        FakeCapcutApiClient.products_response = {
+            "success": True,
+            "products": [
+                {"id": "cc_1", "name": "CapCut Pro", "price": 30000, "stock": 10},
+            ],
+        }
+        FakeCapcutApiClient.balance_response = {"success": True, "balance": 100000}
+        FakeCapcutApiClient.buy_response = {
+            "success": True,
+            "order": {"accounts": ["capcut@example.com|pass"]},
         }
 
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -246,6 +293,10 @@ class SupplierProcessPurchaseTests(unittest.TestCase):
         self.service.update_product_fulfillment_mode(product["id"], "supplier_api")
         self.service.update_product_supplier_product_id(product["id"], "SP-GEF55PBV")
         self.product_id = product["id"]
+        self.capcut_product = self.service.create_product("CapCut Pro 1 thÃ¡ng", "60.000Ä‘")
+        self.service.update_product_fulfillment_mode(self.capcut_product["id"], "supplier_api")
+        self.service.update_product_supplier_provider(self.capcut_product["id"], "capcut_api")
+        self.service.update_product_supplier_product_id(self.capcut_product["id"], "cc_1")
         self.user = SimpleNamespace(id=10, username="buyer", first_name="Buyer", last_name=None)
 
     def tearDown(self):
@@ -315,6 +366,66 @@ class SupplierProcessPurchaseTests(unittest.TestCase):
             runtime_product = bot.get_runtime_product(self.product_id)
 
         self.assertEqual(runtime_product["available"], 0)
+
+    def test_get_runtime_product_uses_min_of_balance_units_and_api_stock_for_capcut(self):
+        FakeCapcutApiClient.products_response = {
+            "success": True,
+            "products": [
+                {"id": "cc_1", "name": "CapCut Pro", "price": 30000, "stock": 10},
+            ],
+        }
+        FakeCapcutApiClient.balance_response = {"success": True, "balance": 70000}
+
+        with patch.object(bot, "CapcutApiClient", FakeCapcutApiClient):
+            runtime_product = bot.get_runtime_product(self.capcut_product["id"])
+
+        self.assertEqual(runtime_product["available"], 2)
+
+    def test_get_runtime_product_caps_by_api_stock_for_capcut(self):
+        FakeCapcutApiClient.products_response = {
+            "success": True,
+            "products": [
+                {"id": "cc_1", "name": "CapCut Pro", "price": 30000, "stock": 3},
+            ],
+        }
+        FakeCapcutApiClient.balance_response = {"success": True, "balance": 300000}
+
+        with patch.object(bot, "CapcutApiClient", FakeCapcutApiClient):
+            runtime_product = bot.get_runtime_product(self.capcut_product["id"])
+
+        self.assertEqual(runtime_product["available"], 3)
+
+    def test_process_purchase_capcut_blocks_when_api_stock_below_qty(self):
+        FakeCapcutApiClient.products_response = {
+            "success": True,
+            "products": [
+                {"id": "cc_1", "name": "CapCut Pro", "price": 30000, "stock": 1},
+            ],
+        }
+        FakeCapcutApiClient.balance_response = {"success": True, "balance": 300000}
+
+        with patch.object(bot, "PayOS", FakePayOS), patch.object(bot.threading, "Thread", DummyThread), patch.object(bot, "CapcutApiClient", FakeCapcutApiClient):
+            bot.process_purchase(self.user, 123, self.capcut_product["id"], 2)
+
+        self.assertEqual(len(FakePayOS.instances), 0)
+        self.assertIn("tạm thời không khả dụng", bot.bot.messages[0][1].lower())
+
+    def test_complete_paid_order_capcut_buys_from_api_and_delivers(self):
+        order = self.service.create_pending_order(
+            user_id=10,
+            username="@buyer",
+            full_name="Buyer",
+            product_id=self.capcut_product["id"],
+            qty=1,
+        )
+
+        with patch.object(bot, "CapcutApiClient", FakeCapcutApiClient):
+            bot.complete_paid_order(123, order["id"], "ORDER-CC", 60000)
+
+        order_row = self.repo.get_order(order["id"])
+        items = self.repo.list_order_items(order["id"])
+        self.assertEqual(order_row["status"], "delivered")
+        self.assertEqual(items[0]["delivered_content"], "capcut@example.com|pass")
 
 
 class ProductListEmojiTests(unittest.TestCase):
@@ -838,6 +949,13 @@ class SQLiteAdminFlowTests(unittest.TestCase):
         button_texts = [button.text for row in reply_markup.keyboard for button in row]
         self.assertIn("🔎 Tra cứu đơn", button_texts)
 
+    def test_show_admin_menu_includes_sync_capcut_button(self):
+        bot.show_admin_menu(123)
+
+        reply_markup = bot.bot.messages[0][2]["reply_markup"]
+        button_texts = [button.text for row in reply_markup.keyboard for button in row]
+        self.assertIn("🔄 Sync CapCut", button_texts)
+
     def test_show_admin_menu_lists_hidden_products_with_restore_button(self):
         product = self.service.create_product("Hidden Product", "10.000d")
         self.service.deactivate_product(product["id"])
@@ -976,6 +1094,33 @@ class SQLiteAdminFlowTests(unittest.TestCase):
         reply_markup = bot.bot.messages[0][2]["reply_markup"]
         button_texts = [button.text for row in reply_markup.keyboard for button in row]
         self.assertIn("🔙 Quay lại Admin", button_texts)
+
+
+    def test_admin_sync_capcut_creates_category_and_reports_summary(self):
+        FakeCapcutApiClient.products_response = {
+            "success": True,
+            "products": [
+                {"id": "cc_1", "name": "CapCut Pro 1 thÃ¡ng", "price": 30000, "stock": 10},
+                {"id": "cc_2", "name": "CapCut Pro 1 nÄƒm", "price": 120000, "stock": 5},
+            ],
+        }
+        call = SimpleNamespace(
+            data="admin_sync_capcut",
+            id="sync1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        with patch.object(bot, "CapcutApiClient", FakeCapcutApiClient):
+            bot.callback_query(call)
+
+        categories = self.service.list_active_categories()
+        category = next(row for row in categories if row["name"] == "Tài khoản CapCut")
+        products = self.service.list_products_for_category(category["id"])
+        self.assertEqual(len(products), 2)
+        self.assertEqual(len(bot.bot.messages), 1)
+        self.assertIn("CapCut", bot.bot.messages[0][1])
+        self.assertIn("Đã tạo: 2", bot.bot.messages[0][1])
 
 
 if __name__ == "__main__":
