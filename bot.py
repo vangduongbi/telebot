@@ -16,7 +16,7 @@ import services
 from capcut_api import CapcutApiClient, CapcutApiError
 from supplier_api import SupplierApiClient, SupplierApiError
 
-
+# API_TOKEN = "8351538881:AAE07EJufSQWVf5stZr0Y2P_oH7EgYuDjtc"
 API_TOKEN = "8306268191:AAFKK33VzWyAOXe1Zg38Dk8LJ5eGAuTcVs0"
 ADMIN_IDS = [1993247449]
 
@@ -830,6 +830,7 @@ def show_admin_category_detail(chat_id, message_id, category_id):
     markup.add(InlineKeyboardButton("📝 Sửa mô tả", callback_data=f"admin_editcategorydesc_{category_id}"))
     toggle_label = "🙈 Ẩn category" if category["is_active"] else "👁️ Hiện category"
     markup.add(InlineKeyboardButton(toggle_label, callback_data=f"admin_togglecategory_{category_id}"))
+    markup.add(InlineKeyboardButton("🧹 Xóa toàn bộ sản phẩm", callback_data=f"admin_deletecategoryproducts_{category_id}"))
     markup.add(InlineKeyboardButton("🗑️ Xóa category", callback_data=f"admin_deletecategory_{category_id}"))
     markup.add(InlineKeyboardButton("🔙 Quay lại category", callback_data="admin_manage_categories"))
     bot.edit_message_text(
@@ -904,6 +905,35 @@ def show_category_delete_confirmation(chat_id, message_id, category_id):
     bot.edit_message_text(
         f"⚠️ Bạn có chắc muốn xóa category **{category['name']}** không?\n"
         "Mọi sản phẩm trong category này sẽ được chuyển về chưa phân loại.",
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=markup,
+        parse_mode="Markdown",
+    )
+
+
+def show_category_products_delete_confirmation(chat_id, message_id, category_id):
+    category = get_runtime_category(category_id)
+    if category is None:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 Quay lại category", callback_data="admin_manage_categories"))
+        bot.edit_message_text(
+            "❌ Category không tồn tại!",
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=markup,
+        )
+        return
+
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("✅ Xóa", callback_data=f"admin_confirmdeletecategoryproducts_{category_id}"),
+        InlineKeyboardButton("❌ Hủy", callback_data=f"admin_category_{category_id}"),
+    )
+    bot.edit_message_text(
+        f"⚠️ Bạn có chắc muốn xóa cứng toàn bộ sản phẩm trong category **{category['name']}** không?\n"
+        "Chỉ những sản phẩm chưa từng có lịch sử đơn hàng hoặc lịch sử kho mới bị xóa.\n"
+        "Các sản phẩm còn lịch sử sẽ bị bỏ qua.",
         chat_id=chat_id,
         message_id=message_id,
         reply_markup=markup,
@@ -1198,6 +1228,42 @@ def callback_query(call):
             return
         shop_service.set_category_active(category_id, not bool(category["is_active"]))
         show_admin_category_detail(chat_id, msg_id, category_id)
+        return
+
+    if call.data.startswith("admin_deletecategoryproducts_"):
+        show_category_products_delete_confirmation(
+            chat_id,
+            msg_id,
+            call.data.split("admin_deletecategoryproducts_", 1)[1],
+        )
+        return
+
+    if call.data.startswith("admin_confirmdeletecategoryproducts_"):
+        category_id = call.data.split("admin_confirmdeletecategoryproducts_", 1)[1]
+        try:
+            summary = shop_service.delete_category_products(category_id)
+        except ValueError:
+            bot.answer_callback_query(call.id, "❌ Category không tồn tại!", show_alert=True)
+            return
+
+        lines = [
+            "🧹 Đã xử lý xóa sản phẩm trong category.",
+            f"Đã xóa: {summary['deleted_count']}",
+            f"Bỏ qua: {len(summary['skipped_names'])}",
+        ]
+        if summary["skipped_names"]:
+            lines.append("")
+            lines.append("Sản phẩm bị bỏ qua:")
+            lines.extend(f"• {name}" for name in summary["skipped_names"])
+
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 Quay lại category", callback_data=f"admin_category_{category_id}"))
+        bot.edit_message_text(
+            "\n".join(lines),
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=markup,
+        )
         return
 
     if call.data.startswith("admin_deletecategory_"):

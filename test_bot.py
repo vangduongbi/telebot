@@ -875,9 +875,54 @@ class CategoryBotFlowTests(unittest.TestCase):
         buttons = [button for row in markup.keyboard for button in row]
         self.assertTrue(any(button.text == "➕ Thêm sản phẩm vào category" for button in buttons))
         self.assertTrue(any(button.callback_data == f"admin_addproduct_category|{category['id']}" for button in buttons))
+        self.assertTrue(any(button.callback_data == f"admin_deletecategoryproducts_{category['id']}" for button in buttons))
         self.assertTrue(any(button.text == "✏️ Sửa tên" for button in buttons))
         self.assertTrue(any(button.text == "🙈 Ẩn category" for button in buttons))
         self.assertTrue(any(button.text == "🗑️ Xóa category" for button in buttons))
+
+    def test_show_bulk_delete_confirmation(self):
+        category = self.service.create_category("ChatGPT")
+        call = SimpleNamespace(
+            data=f"admin_deletecategoryproducts_{category['id']}",
+            id="cat-bulk-1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("xóa cứng", text.lower())
+        markup = bot.bot.edits[0][3]["reply_markup"]
+        buttons = [button for row in markup.keyboard for button in row]
+        self.assertTrue(
+            any(button.callback_data == f"admin_confirmdeletecategoryproducts_{category['id']}" for button in buttons)
+        )
+
+    def test_confirm_bulk_delete_shows_summary_with_skipped_names(self):
+        category = self.service.create_category("ChatGPT")
+        clean = self.service.create_product("Clean Product", "100.000d")
+        protected = self.service.create_product("Protected Product", "200.000d")
+        self.service.assign_product_category(clean["id"], category["id"])
+        self.service.assign_product_category(protected["id"], category["id"])
+        self.repo.add_stock_items(protected["id"], ["email|pass"], "batch-1")
+        call = SimpleNamespace(
+            data=f"admin_confirmdeletecategoryproducts_{category['id']}",
+            id="cat-bulk-2",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("Đã xóa: 1", text)
+        self.assertIn("Bỏ qua: 1", text)
+        self.assertIn("Protected Product", text)
+        self.assertIsNone(self.repo.get_product(clean["id"]))
+        self.assertIsNotNone(self.repo.get_product(protected["id"]))
 
     def test_admin_add_product_to_category_from_category_screen(self):
         category = self.service.create_category("ChatGPT")
