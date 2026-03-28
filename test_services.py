@@ -227,6 +227,16 @@ class AdminProductServiceTests(SQLiteServiceTestCase):
         self.assertEqual(stored["supplier_provider"], "capcut_api")
 
 
+    def test_update_product_description(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Product With Description", "30.000đ")
+
+        service.update_product_description(product["id"], "Product override")
+
+        stored = repositories.Repository(self.db_path).get_product(product["id"])
+        self.assertEqual(stored["description"], "Product override")
+
+
 class CategoryServiceTests(SQLiteServiceTestCase):
     def test_create_category_and_assign_product(self):
         service = services.ShopService(self.db_path)
@@ -294,6 +304,51 @@ class CategoryServiceTests(SQLiteServiceTestCase):
         self.assertIsNone(stored_product["category_id"])
         self.assertNotIn(category["id"], active_ids)
         self.assertNotIn(category["id"], manageable_ids)
+
+
+    def test_create_category_accepts_description(self):
+        service = services.ShopService(self.db_path)
+
+        category = service.create_category("Google AI", "Shared category note")
+
+        self.assertEqual(category["description"], "Shared category note")
+
+    def test_update_category_description(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Google AI")
+
+        updated = service.update_category_description(category["id"], "Updated category note")
+
+        self.assertEqual(updated["description"], "Updated category note")
+
+    def test_get_resolved_product_description_prefers_product_description(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Google AI", "Category note")
+        product = service.create_product("Google AI Pro", "30.000đ")
+        service.assign_product_category(product["id"], category["id"])
+        service.update_product_description(product["id"], "Product override")
+
+        description = service.get_resolved_product_description(product["id"])
+
+        self.assertEqual(description, "Product override")
+
+    def test_get_resolved_product_description_falls_back_to_category(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Google AI", "Category note")
+        product = service.create_product("Google AI Pro", "30.000đ")
+        service.assign_product_category(product["id"], category["id"])
+
+        description = service.get_resolved_product_description(product["id"])
+
+        self.assertEqual(description, "Category note")
+
+    def test_get_resolved_product_description_returns_empty_when_no_description_exists(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("No Description", "10.000đ")
+
+        description = service.get_resolved_product_description(product["id"])
+
+        self.assertEqual(description, "")
 
 
 class CapcutSyncServiceTests(SQLiteServiceTestCase):

@@ -17,6 +17,7 @@ def init_db(db_path="shop.db"):
             CREATE TABLE IF NOT EXISTS categories (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 is_deleted INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -28,6 +29,7 @@ def init_db(db_path="shop.db"):
                 name TEXT NOT NULL,
                 price INTEGER NOT NULL,
                 category_id TEXT,
+                description TEXT NOT NULL DEFAULT '',
                 fulfillment_mode TEXT NOT NULL DEFAULT 'local_stock',
                 supplier_product_id TEXT,
                 supplier_provider TEXT,
@@ -110,6 +112,10 @@ def init_db(db_path="shop.db"):
             conn.execute(
                 "ALTER TABLE products ADD COLUMN category_id TEXT REFERENCES categories(id)"
             )
+        if "description" not in product_columns:
+            conn.execute(
+                "ALTER TABLE products ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+            )
         if "fulfillment_mode" not in product_columns:
             conn.execute(
                 "ALTER TABLE products ADD COLUMN fulfillment_mode TEXT NOT NULL DEFAULT 'local_stock'"
@@ -130,6 +136,10 @@ def init_db(db_path="shop.db"):
             row["name"]
             for row in conn.execute("PRAGMA table_info(categories)").fetchall()
         }
+        if "description" not in category_columns:
+            conn.execute(
+                "ALTER TABLE categories ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+            )
         if "is_deleted" not in category_columns:
             conn.execute(
                 "ALTER TABLE categories ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"

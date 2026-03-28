@@ -118,6 +118,7 @@ class DatabaseSchemaTests(SQLiteTestCase):
                     "name",
                     "price",
                     "category_id",
+                    "description",
                     "fulfillment_mode",
                     "supplier_product_id",
                     "supplier_provider",
@@ -129,6 +130,7 @@ class DatabaseSchemaTests(SQLiteTestCase):
                 "categories": [
                     "id",
                     "name",
+                    "description",
                     "is_active",
                     "is_deleted",
                     "created_at",
@@ -245,7 +247,33 @@ class ProductRepositoryTests(SQLiteTestCase):
         self.assertEqual(row["id"], "prod_1")
         self.assertEqual(row["name"], "Product A")
         self.assertEqual(row["price"], 100000)
+        self.assertEqual(row["description"], "")
         self.assertIsNone(row["supplier_provider"])
+
+    def test_update_product_description(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_1", "Product A", 100000)
+
+        row = repo.update_product_description("prod_1", "Product note")
+
+        self.assertEqual(row["description"], "Product note")
+
+    def test_create_category_persists_description(self):
+        repo = repositories.Repository(self.db_path)
+
+        row = repo.create_category("cat_1", "Google AI", "Shared category note")
+
+        self.assertEqual(row["id"], "cat_1")
+        self.assertEqual(row["name"], "Google AI")
+        self.assertEqual(row["description"], "Shared category note")
+
+    def test_update_category_description(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_category("cat_1", "Google AI", "")
+
+        row = repo.update_category_description("cat_1", "New note")
+
+        self.assertEqual(row["description"], "New note")
 
     def test_update_product_supplier_provider(self):
         repo = repositories.Repository(self.db_path)

@@ -39,8 +39,9 @@ class ShopService:
     def list_manageable_categories(self):
         return self.repo.list_manageable_categories()
 
-    def create_category(self, name):
+    def create_category(self, name, description=""):
         category_name = str(name or "").strip()
+        category_description = str(description or "").strip()
         if not category_name:
             raise ValueError("Category name is required")
 
@@ -48,7 +49,7 @@ class ShopService:
         while self.repo.get_category(category_id) is not None:
             time.sleep(1)
             category_id = self._new_category_id()
-        return self.repo.create_category(category_id, category_name)
+        return self.repo.create_category(category_id, category_name, category_description)
 
     def ensure_category(self, name):
         category_name = str(name or "").strip()
@@ -78,6 +79,12 @@ class ShopService:
             raise ValueError("Category does not exist")
         return self.repo.update_category_name(category_id, category_name)
 
+    def update_category_description(self, category_id, description):
+        category = self.repo.get_category(category_id)
+        if category is None:
+            raise ValueError("Category does not exist")
+        return self.repo.update_category_description(category_id, str(description or "").strip())
+
     def set_category_active(self, category_id, is_active):
         category = self.repo.get_category(category_id)
         if category is None:
@@ -90,8 +97,9 @@ class ShopService:
             raise ValueError("Category does not exist")
         self.repo.delete_category(category_id)
 
-    def create_product(self, name, price):
+    def create_product(self, name, price, description=""):
         product_name = str(name or "").strip()
+        product_description = str(description or "").strip()
         price_value = migration.parse_price_to_int(price)
         if not product_name:
             raise ValueError("Product name is required")
@@ -100,7 +108,7 @@ class ShopService:
         while self.repo.get_product(product_id) is not None:
             time.sleep(1)
             product_id = self._new_product_id()
-        return self.repo.create_product(product_id, product_name, price_value)
+        return self.repo.create_product(product_id, product_name, price_value, product_description)
 
     def update_product_name(self, product_id, name):
         product_name = str(name or "").strip()
@@ -116,6 +124,12 @@ class ShopService:
         if product is None:
             raise ValueError("Product does not exist")
         return self.repo.update_product_price(product_id, migration.parse_price_to_int(price))
+
+    def update_product_description(self, product_id, description):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        return self.repo.update_product_description(product_id, str(description or "").strip())
 
     def update_product_fulfillment_mode(self, product_id, fulfillment_mode):
         product = self.repo.get_product(product_id)
@@ -139,6 +153,21 @@ class ShopService:
         if supplier_provider not in {None, "sumistore", "capcut_api"}:
             raise ValueError("Invalid supplier provider")
         return self.repo.update_product_supplier_provider(product_id, supplier_provider)
+
+    def get_resolved_product_description(self, product_id):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        product_description = str(product["description"] or "")
+        if product_description.strip():
+            return product_description
+        category_id = product["category_id"]
+        if not category_id:
+            return ""
+        category = self.repo.get_category(category_id)
+        if category is None:
+            return ""
+        return str(category["description"] or "")
 
     def sync_capcut_products(self, api_products):
         category = self.ensure_category("Tài khoản CapCut")
