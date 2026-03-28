@@ -10,33 +10,33 @@ class Repository:
     def _now(self):
         return int(time.time())
 
-    def create_product(self, product_id, name, price):
+    def create_product(self, product_id, name, price, description=""):
         now = self._now()
         with database.transaction(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO products (
-                    id, name, price, category_id, fulfillment_mode,
+                    id, name, price, category_id, description, fulfillment_mode,
                     supplier_product_id, supplier_provider, sales_mode, is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, NULL, 'local_stock', NULL, NULL, 'normal', 1, ?, ?)
+                ) VALUES (?, ?, ?, NULL, ?, 'local_stock', NULL, NULL, 'normal', 1, ?, ?)
                 """,
-                (product_id, name, int(price), now, now),
+                (product_id, name, int(price), str(description or ""), now, now),
             )
             return conn.execute(
                 "SELECT * FROM products WHERE id = ?",
                 (product_id,),
             ).fetchone()
 
-    def create_category(self, category_id, name):
+    def create_category(self, category_id, name, description=""):
         now = self._now()
         with database.transaction(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO categories (
-                    id, name, is_active, is_deleted, created_at, updated_at
-                ) VALUES (?, ?, 1, 0, ?, ?)
+                    id, name, description, is_active, is_deleted, created_at, updated_at
+                ) VALUES (?, ?, ?, 1, 0, ?, ?)
                 """,
-                (category_id, name, now, now),
+                (category_id, name, str(description or ""), now, now),
             )
             return conn.execute(
                 "SELECT * FROM categories WHERE id = ?",
@@ -107,6 +107,22 @@ class Repository:
                 WHERE id = ? AND is_deleted = 0
                 """,
                 (name, now, category_id),
+            )
+            return conn.execute(
+                "SELECT * FROM categories WHERE id = ?",
+                (category_id,),
+            ).fetchone()
+
+    def update_category_description(self, category_id, description):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE categories
+                SET description = ?, updated_at = ?
+                WHERE id = ? AND is_deleted = 0
+                """,
+                (str(description or ""), now, category_id),
             )
             return conn.execute(
                 "SELECT * FROM categories WHERE id = ?",
@@ -211,6 +227,21 @@ class Repository:
         finally:
             conn.close()
 
+    def list_products_for_category_management(self, category_id):
+        conn = database.get_connection(self.db_path)
+        try:
+            return conn.execute(
+                """
+                SELECT *
+                FROM products
+                WHERE category_id = ?
+                ORDER BY id
+                """,
+                (category_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
     def update_product_name(self, product_id, name):
         now = self._now()
         with database.transaction(self.db_path) as conn:
@@ -237,6 +268,22 @@ class Repository:
                 WHERE id = ?
                 """,
                 (int(price), now, product_id),
+            )
+            return conn.execute(
+                "SELECT * FROM products WHERE id = ?",
+                (product_id,),
+            ).fetchone()
+
+    def update_product_description(self, product_id, description):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE products
+                SET description = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (str(description or ""), now, product_id),
             )
             return conn.execute(
                 "SELECT * FROM products WHERE id = ?",
@@ -383,6 +430,27 @@ class Repository:
                 "SELECT * FROM products WHERE id = ?",
                 (product_id,),
             ).fetchone()
+
+    def product_has_history(self, product_id):
+        conn = database.get_connection(self.db_path)
+        try:
+            has_order = conn.execute(
+                "SELECT 1 FROM orders WHERE product_id = ? LIMIT 1",
+                (product_id,),
+            ).fetchone()
+            if has_order is not None:
+                return True
+            has_stock = conn.execute(
+                "SELECT 1 FROM stock_items WHERE product_id = ? LIMIT 1",
+                (product_id,),
+            ).fetchone()
+            return has_stock is not None
+        finally:
+            conn.close()
+
+    def delete_product_hard(self, product_id):
+        with database.transaction(self.db_path) as conn:
+            conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
 
     def add_stock_items(self, product_id, contents, batch_id):
         if isinstance(contents, (str, bytes, bytearray)):

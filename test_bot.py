@@ -679,6 +679,61 @@ class UserHomeFlowTests(unittest.TestCase):
         )
         self.assertEqual(product_button.url, "https://t.me/libi94")
         self.assertIsNone(product_button.callback_data)
+ 
+    def test_quantity_screen_uses_category_description_when_product_description_is_empty(self):
+        category = self.service.create_category("Google AI", "Shared category note")
+        product = self.service.create_product("Google AI Pro 1 năm", "50.000đ")
+        self.service.assign_product_category(product["id"], category["id"])
+        self.service.add_product_stock(product["id"], "mail@example.com|pass|2fa")
+        call = SimpleNamespace(
+            data=f"buy_{product['id']}",
+            id="products-desc-1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=10),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("Shared category note", text)
+
+    def test_quantity_screen_prefers_product_description_over_category_description(self):
+        category = self.service.create_category("Google AI", "Shared category note")
+        product = self.service.create_product("Google AI Pro 1 năm", "50.000đ")
+        self.service.assign_product_category(product["id"], category["id"])
+        self.service.update_product_description(product["id"], "Product-specific note")
+        self.service.add_product_stock(product["id"], "mail@example.com|pass|2fa")
+        call = SimpleNamespace(
+            data=f"buy_{product['id']}",
+            id="products-desc-2",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=10),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("Product-specific note", text)
+        self.assertNotIn("Shared category note", text)
+
+    def test_quantity_screen_omits_description_when_both_are_empty(self):
+        product = self.service.create_product("Google AI Pro 1 năm", "50.000đ")
+        self.service.add_product_stock(product["id"], "mail@example.com|pass|2fa")
+        call = SimpleNamespace(
+            data=f"buy_{product['id']}",
+            id="products-desc-3",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=10),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertNotIn("Shared category note", text)
+        self.assertNotIn("Product-specific note", text)
 
 
 class CategoryBotFlowTests(unittest.TestCase):
@@ -755,6 +810,34 @@ class CategoryBotFlowTests(unittest.TestCase):
         categories = bot.shop_service.list_active_categories()
         self.assertTrue(any(row["name"] == "Tài khoản ChatGPT" for row in categories))
 
+    def test_admin_process_create_category_description_writes_to_sqlite(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="Shared category note")
+
+        bot.admin_process_create_category_description(message, "TÃ i khoáº£n ChatGPT")
+
+        categories = bot.shop_service.list_active_categories()
+        self.assertTrue(
+            any(
+                row["name"] == "TÃ i khoáº£n ChatGPT"
+                and row["description"] == "Shared category note"
+                for row in categories
+            )
+        )
+
+    def test_admin_process_create_category_description_dash_clears_description(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="-")
+
+        bot.admin_process_create_category_description(message, "TÃ i khoáº£n ChatGPT")
+
+        categories = bot.shop_service.list_active_categories()
+        self.assertTrue(
+            any(
+                row["name"] == "TÃ i khoáº£n ChatGPT"
+                and row["description"] == ""
+                for row in categories
+            )
+        )
+
     def test_admin_assign_category_updates_product(self):
         category = self.service.create_category("Tài khoản ChatGPT")
         product = self.service.create_product("ChatGPT Plus", "100.000đ")
@@ -792,9 +875,54 @@ class CategoryBotFlowTests(unittest.TestCase):
         buttons = [button for row in markup.keyboard for button in row]
         self.assertTrue(any(button.text == "➕ Thêm sản phẩm vào category" for button in buttons))
         self.assertTrue(any(button.callback_data == f"admin_addproduct_category|{category['id']}" for button in buttons))
+        self.assertTrue(any(button.callback_data == f"admin_deletecategoryproducts_{category['id']}" for button in buttons))
         self.assertTrue(any(button.text == "✏️ Sửa tên" for button in buttons))
         self.assertTrue(any(button.text == "🙈 Ẩn category" for button in buttons))
         self.assertTrue(any(button.text == "🗑️ Xóa category" for button in buttons))
+
+    def test_show_bulk_delete_confirmation(self):
+        category = self.service.create_category("ChatGPT")
+        call = SimpleNamespace(
+            data=f"admin_deletecategoryproducts_{category['id']}",
+            id="cat-bulk-1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("xóa cứng", text.lower())
+        markup = bot.bot.edits[0][3]["reply_markup"]
+        buttons = [button for row in markup.keyboard for button in row]
+        self.assertTrue(
+            any(button.callback_data == f"admin_confirmdeletecategoryproducts_{category['id']}" for button in buttons)
+        )
+
+    def test_confirm_bulk_delete_shows_summary_with_skipped_names(self):
+        category = self.service.create_category("ChatGPT")
+        clean = self.service.create_product("Clean Product", "100.000d")
+        protected = self.service.create_product("Protected Product", "200.000d")
+        self.service.assign_product_category(clean["id"], category["id"])
+        self.service.assign_product_category(protected["id"], category["id"])
+        self.repo.add_stock_items(protected["id"], ["email|pass"], "batch-1")
+        call = SimpleNamespace(
+            data=f"admin_confirmdeletecategoryproducts_{category['id']}",
+            id="cat-bulk-2",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("Đã xóa: 1", text)
+        self.assertIn("Bỏ qua: 1", text)
+        self.assertIn("Protected Product", text)
+        self.assertIsNone(self.repo.get_product(clean["id"]))
+        self.assertIsNotNone(self.repo.get_product(protected["id"]))
 
     def test_admin_add_product_to_category_from_category_screen(self):
         category = self.service.create_category("ChatGPT")
@@ -884,6 +1012,76 @@ class CategoryBotFlowTests(unittest.TestCase):
         stored = self.repo.get_product(product["id"])
         self.assertIsNone(stored["category_id"])
         self.assertFalse(any(row["id"] == category["id"] for row in self.service.list_manageable_categories()))
+
+
+    def test_admin_process_create_category_writes_to_sqlite(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="TÃ i khoáº£n ChatGPT")
+
+        bot.admin_process_create_category(message)
+
+        self.assertEqual(len(bot.bot.next_steps), 1)
+        self.assertEqual(bot.bot.next_steps[0][1].__name__, "admin_process_create_category_description")
+
+    def test_admin_category_detail_shows_description_button(self):
+        category = self.service.create_category("ChatGPT")
+        call = SimpleNamespace(
+            data=f"admin_category_{category['id']}",
+            id="cat-desc-1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        markup = bot.bot.edits[0][3]["reply_markup"]
+        buttons = [button for row in markup.keyboard for button in row]
+        self.assertTrue(any(button.callback_data == f"admin_editcategorydesc_{category['id']}" for button in buttons))
+
+    def test_admin_process_create_category_description_writes_to_sqlite(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="Shared category note")
+
+        bot.admin_process_create_category_description(message, "TÃ i khoáº£n ChatGPT")
+
+        categories = bot.shop_service.list_active_categories()
+        self.assertTrue(
+            any(
+                row["name"] == "TÃ i khoáº£n ChatGPT" and row["description"] == "Shared category note"
+                for row in categories
+            )
+        )
+
+    def test_admin_process_create_category_description_dash_clears_description(self):
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="-")
+
+        bot.admin_process_create_category_description(message, "TÃ i khoáº£n ChatGPT")
+
+        categories = bot.shop_service.list_active_categories()
+        self.assertTrue(
+            any(
+                row["name"] == "TÃ i khoáº£n ChatGPT" and row["description"] == ""
+                for row in categories
+            )
+        )
+
+    def test_admin_process_edit_category_description_updates_description(self):
+        category = self.service.create_category("Old Category")
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="Updated description")
+
+        bot.admin_process_edit_category_description(message, category["id"])
+
+        updated = self.service.list_manageable_categories()
+        self.assertTrue(
+            any(row["id"] == category["id"] and row["description"] == "Updated description" for row in updated)
+        )
+
+    def test_admin_process_edit_category_description_dash_clears_description(self):
+        category = self.service.create_category("Old Category", "Has description")
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="-")
+
+        bot.admin_process_edit_category_description(message, category["id"])
+
+        updated = self.service.list_manageable_categories()
+        self.assertTrue(any(row["id"] == category["id"] and row["description"] == "" for row in updated))
 
 
 class SQLiteAdminFlowTests(unittest.TestCase):
@@ -1060,6 +1258,42 @@ class SQLiteAdminFlowTests(unittest.TestCase):
         self.assertIn("Còn: 1", text)
         self.assertIn("Đã giữ: 0", text)
         self.assertIn("Đã bán: 1", text)
+
+    def test_admin_product_detail_shows_description_status_and_button(self):
+        product = self.service.create_product("Detail Product", "10.000d")
+        call = SimpleNamespace(
+            data=f"admin_prod_{product['id']}",
+            id="cb2desc",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        text = bot.bot.edits[0][2]
+        markup = bot.bot.edits[0][3]["reply_markup"]
+        buttons = [button for row in markup.keyboard for button in row]
+        self.assertIn("Mô tả riêng", text)
+        self.assertTrue(any(button.callback_data == f"admin_editdesc_{product['id']}" for button in buttons))
+
+    def test_admin_process_edit_product_description_updates_sqlite(self):
+        product = self.service.create_product("Detail Product", "10.000d")
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="Product note")
+
+        bot.admin_process_edit_product_description(message, product["id"])
+
+        stored = self.repo.get_product(product["id"])
+        self.assertEqual(stored["description"], "Product note")
+
+    def test_admin_process_edit_product_description_dash_clears_description(self):
+        product = self.service.create_product("Detail Product", "10.000d")
+        self.service.update_product_description(product["id"], "Product note")
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="-")
+
+        bot.admin_process_edit_product_description(message, product["id"])
+
+        stored = self.repo.get_product(product["id"])
+        self.assertEqual(stored["description"], "")
 
     def test_admin_process_lookup_order_shows_delivered_accounts(self):
         product = self.service.create_product("Lookup Product", "15.000d")

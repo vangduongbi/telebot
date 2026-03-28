@@ -227,6 +227,16 @@ class AdminProductServiceTests(SQLiteServiceTestCase):
         self.assertEqual(stored["supplier_provider"], "capcut_api")
 
 
+    def test_update_product_description(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Product With Description", "30.000đ")
+
+        service.update_product_description(product["id"], "Product override")
+
+        stored = repositories.Repository(self.db_path).get_product(product["id"])
+        self.assertEqual(stored["description"], "Product override")
+
+
 class CategoryServiceTests(SQLiteServiceTestCase):
     def test_create_category_and_assign_product(self):
         service = services.ShopService(self.db_path)
@@ -294,6 +304,137 @@ class CategoryServiceTests(SQLiteServiceTestCase):
         self.assertIsNone(stored_product["category_id"])
         self.assertNotIn(category["id"], active_ids)
         self.assertNotIn(category["id"], manageable_ids)
+
+
+    def test_create_category_accepts_description(self):
+        service = services.ShopService(self.db_path)
+
+        category = service.create_category("Google AI", "Shared category note")
+
+        self.assertEqual(category["description"], "Shared category note")
+
+    def test_update_category_description(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Google AI")
+
+        updated = service.update_category_description(category["id"], "Updated category note")
+
+        self.assertEqual(updated["description"], "Updated category note")
+
+    def test_get_resolved_product_description_prefers_product_description(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Google AI", "Category note")
+        product = service.create_product("Google AI Pro", "30.000đ")
+        service.assign_product_category(product["id"], category["id"])
+        service.update_product_description(product["id"], "Product override")
+
+        description = service.get_resolved_product_description(product["id"])
+
+        self.assertEqual(description, "Product override")
+
+    def test_get_resolved_product_description_falls_back_to_category(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Google AI", "Category note")
+        product = service.create_product("Google AI Pro", "30.000đ")
+        service.assign_product_category(product["id"], category["id"])
+
+        description = service.get_resolved_product_description(product["id"])
+
+        self.assertEqual(description, "Category note")
+
+    def test_get_resolved_product_description_returns_empty_when_no_description_exists(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("No Description", "10.000đ")
+
+        description = service.get_resolved_product_description(product["id"])
+
+        self.assertEqual(description, "")
+
+
+    def test_delete_category_products_deletes_all_clean_products(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Cat A")
+        prod1 = service.create_product("P1", "1.000đ")
+        prod2 = service.create_product("P2", "2.000đ")
+        service.assign_product_category(prod1["id"], category["id"])
+        service.assign_product_category(prod2["id"], category["id"])
+
+        summary = service.delete_category_products(category["id"])
+        repo = repositories.Repository(self.db_path)
+
+        self.assertEqual(summary["deleted_count"], 2)
+        self.assertEqual(set(summary["deleted_names"]), {"P1", "P2"})
+        self.assertEqual(summary["skipped_names"], [])
+        self.assertIsNone(repo.get_product(prod1["id"]))
+        self.assertIsNone(repo.get_product(prod2["id"]))
+
+    def test_delete_category_products_skips_product_with_stock_history(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Cat A")
+        clean = service.create_product("Clean", "1.000đ")
+        stocked = service.create_product("Stocked", "2.000đ")
+        service.assign_product_category(clean["id"], category["id"])
+        service.assign_product_category(stocked["id"], category["id"])
+
+        repo = repositories.Repository(self.db_path)
+        repo.add_stock_items(stocked["id"], ["email|pass"], "batch-1")
+
+        summary = service.delete_category_products(category["id"])
+
+        self.assertEqual(summary["deleted_count"], 1)
+        self.assertEqual(summary["deleted_names"], ["Clean"])
+        self.assertEqual(summary["skipped_names"], ["Stocked"])
+        self.assertIsNone(repo.get_product(clean["id"]))
+        self.assertIsNotNone(repo.get_product(stocked["id"]))
+
+    def test_delete_category_products_skips_product_with_order_history(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Cat A")
+        clean = service.create_product("Clean", "1.000đ")
+        ordered = service.create_product("Ordered", "2.000đ")
+        service.assign_product_category(clean["id"], category["id"])
+        service.assign_product_category(ordered["id"], category["id"])
+
+        repo = repositories.Repository(self.db_path)
+        repo.create_order(
+            order_id="ORD-1",
+            order_code=100001,
+            user_id=1,
+            username="@u",
+            full_name="User",
+            product_id=ordered["id"],
+            qty=1,
+            unit_price=2000,
+            total_amount=2000,
+            status="pending_payment",
+            payos_ref=None,
+            note=None,
+            created_at=123,
+        )
+
+        summary = service.delete_category_products(category["id"])
+
+        self.assertEqual(summary["deleted_count"], 1)
+        self.assertEqual(summary["deleted_names"], ["Clean"])
+        self.assertEqual(summary["skipped_names"], ["Ordered"])
+        self.assertIsNone(repo.get_product(clean["id"]))
+        self.assertIsNotNone(repo.get_product(ordered["id"]))
+
+    def test_delete_category_products_returns_zero_for_empty_category(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Empty")
+
+        summary = service.delete_category_products(category["id"])
+
+        self.assertEqual(summary["deleted_count"], 0)
+        self.assertEqual(summary["deleted_names"], [])
+        self.assertEqual(summary["skipped_names"], [])
+
+    def test_delete_category_products_raises_for_missing_category(self):
+        service = services.ShopService(self.db_path)
+
+        with self.assertRaisesRegex(ValueError, "Category does not exist"):
+            service.delete_category_products("cat_missing")
 
 
 class CapcutSyncServiceTests(SQLiteServiceTestCase):

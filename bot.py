@@ -16,7 +16,7 @@ import services
 from capcut_api import CapcutApiClient, CapcutApiError
 from supplier_api import SupplierApiClient, SupplierApiError
 
-
+# API_TOKEN = "8351538881:AAE07EJufSQWVf5stZr0Y2P_oH7EgYuDjtc"
 API_TOKEN = "8306268191:AAFKK33VzWyAOXe1Zg38Dk8LJ5eGAuTcVs0"
 ADMIN_IDS = [1993247449]
 
@@ -817,6 +817,7 @@ def show_admin_category_detail(chat_id, message_id, category_id):
     product_lines = [f"• {product['name']}" for product in products]
     if not product_lines:
         product_lines = ["Chưa có sản phẩm nào trong category này."]
+    description_status = "Đã thiết lập" if str(category["description"] or "").strip() else "Chưa thiết lập"
 
     markup = InlineKeyboardMarkup()
     markup.add(
@@ -826,12 +827,15 @@ def show_admin_category_detail(chat_id, message_id, category_id):
         )
     )
     markup.add(InlineKeyboardButton("✏️ Sửa tên", callback_data=f"admin_editcategory_{category_id}"))
+    markup.add(InlineKeyboardButton("📝 Sửa mô tả", callback_data=f"admin_editcategorydesc_{category_id}"))
     toggle_label = "🙈 Ẩn category" if category["is_active"] else "👁️ Hiện category"
     markup.add(InlineKeyboardButton(toggle_label, callback_data=f"admin_togglecategory_{category_id}"))
+    markup.add(InlineKeyboardButton("🧹 Xóa toàn bộ sản phẩm", callback_data=f"admin_deletecategoryproducts_{category_id}"))
     markup.add(InlineKeyboardButton("🗑️ Xóa category", callback_data=f"admin_deletecategory_{category_id}"))
     markup.add(InlineKeyboardButton("🔙 Quay lại category", callback_data="admin_manage_categories"))
     bot.edit_message_text(
-        f"🗂️ **{category['name']}**\n\nSản phẩm hiện có:\n" + "\n".join(product_lines),
+        f"🗂️ **{category['name']}**\n"
+        f"Mô tả: {description_status}\n\nSản phẩm hiện có:\n" + "\n".join(product_lines),
         chat_id=chat_id,
         message_id=message_id,
         reply_markup=markup,
@@ -901,6 +905,35 @@ def show_category_delete_confirmation(chat_id, message_id, category_id):
     bot.edit_message_text(
         f"⚠️ Bạn có chắc muốn xóa category **{category['name']}** không?\n"
         "Mọi sản phẩm trong category này sẽ được chuyển về chưa phân loại.",
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=markup,
+        parse_mode="Markdown",
+    )
+
+
+def show_category_products_delete_confirmation(chat_id, message_id, category_id):
+    category = get_runtime_category(category_id)
+    if category is None:
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 Quay lại category", callback_data="admin_manage_categories"))
+        bot.edit_message_text(
+            "❌ Category không tồn tại!",
+            chat_id=chat_id,
+            message_id=message_id,
+            reply_markup=markup,
+        )
+        return
+
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("✅ Xóa", callback_data=f"admin_confirmdeletecategoryproducts_{category_id}"),
+        InlineKeyboardButton("❌ Hủy", callback_data=f"admin_category_{category_id}"),
+    )
+    bot.edit_message_text(
+        f"⚠️ Bạn có chắc muốn xóa cứng toàn bộ sản phẩm trong category **{category['name']}** không?\n"
+        "Chỉ những sản phẩm chưa từng có lịch sử đơn hàng hoặc lịch sử kho mới bị xóa.\n"
+        "Các sản phẩm còn lịch sử sẽ bị bỏ qua.",
         chat_id=chat_id,
         message_id=message_id,
         reply_markup=markup,
@@ -1069,11 +1102,18 @@ def callback_query(call):
         stock_line = f"📦 Tồn kho: {runtime_product['available']}"
         if runtime_product["fulfillment_mode"] == "supplier_api":
             stock_line = f"🌐 Còn: {runtime_product['available']}"
+        description = ""
+        try:
+            description = shop_service.get_resolved_product_description(product_id)
+        except Exception:
+            description = ""
+        description_block = f"\n\n{description}" if str(description or "").strip() else ""
 
         try:
             bot.edit_message_text(
                 f"🛒 Bạn đang chọn mua: **{runtime_product['name']}**\n"
-                f"{stock_line}\n\n"
+                f"{stock_line}"
+                f"{description_block}\n\n"
                 "👇 Vui lòng chọn số lượng bạn muốn mua:",
                 chat_id=chat_id,
                 message_id=msg_id,
@@ -1166,6 +1206,20 @@ def callback_query(call):
         bot.register_next_step_handler(msg, admin_process_edit_category, category_id)
         return
 
+    if call.data.startswith("admin_editcategorydesc_"):
+        category_id = call.data.split("admin_editcategorydesc_", 1)[1]
+        category = get_runtime_category(category_id)
+        if category is None:
+            bot.answer_callback_query(call.id, "❌ Category không tồn tại!", show_alert=True)
+            return
+        msg = bot.send_message(
+            chat_id,
+            f"📝 Nhập mô tả mới cho category **{category['name']}**.\nGửi `-` để xóa mô tả.",
+            parse_mode="Markdown",
+        )
+        bot.register_next_step_handler(msg, admin_process_edit_category_description, category_id)
+        return
+
     if call.data.startswith("admin_togglecategory_"):
         category_id = call.data.split("admin_togglecategory_", 1)[1]
         category = get_runtime_category(category_id)
@@ -1174,6 +1228,42 @@ def callback_query(call):
             return
         shop_service.set_category_active(category_id, not bool(category["is_active"]))
         show_admin_category_detail(chat_id, msg_id, category_id)
+        return
+
+    if call.data.startswith("admin_deletecategoryproducts_"):
+        show_category_products_delete_confirmation(
+            chat_id,
+            msg_id,
+            call.data.split("admin_deletecategoryproducts_", 1)[1],
+        )
+        return
+
+    if call.data.startswith("admin_confirmdeletecategoryproducts_"):
+        category_id = call.data.split("admin_confirmdeletecategoryproducts_", 1)[1]
+        try:
+            summary = shop_service.delete_category_products(category_id)
+        except ValueError:
+            bot.answer_callback_query(call.id, "❌ Category không tồn tại!", show_alert=True)
+            return
+
+        lines = [
+            "🧹 Đã xử lý xóa sản phẩm trong category.",
+            f"Đã xóa: {summary['deleted_count']}",
+            f"Bỏ qua: {len(summary['skipped_names'])}",
+        ]
+        if summary["skipped_names"]:
+            lines.append("")
+            lines.append("Sản phẩm bị bỏ qua:")
+            lines.extend(f"• {name}" for name in summary["skipped_names"])
+
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 Quay lại category", callback_data=f"admin_category_{category_id}"))
+        bot.edit_message_text(
+            "\n".join(lines),
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=markup,
+        )
         return
 
     if call.data.startswith("admin_deletecategory_"):
@@ -1219,6 +1309,7 @@ def callback_query(call):
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("📥 Nhập kho", callback_data=f"admin_addstock_{product_id}"))
         markup.add(InlineKeyboardButton("🗂️ Gán category", callback_data=f"admin_assigncategory_{product_id}"))
+        markup.add(InlineKeyboardButton("📝 Sửa mô tả", callback_data=f"admin_editdesc_{product_id}"))
         markup.add(InlineKeyboardButton("💬 Chế độ bán", callback_data=f"admin_salesmodecfg_{product_id}"))
         markup.add(InlineKeyboardButton("🌐 Cấu hình API", callback_data=f"admin_suppliercfg_{product_id}"))
         markup.add(InlineKeyboardButton("✏️ Sửa tên", callback_data=f"admin_editname_{product_id}"))
@@ -1240,6 +1331,12 @@ def callback_query(call):
         sales_mode_label = "Liên hệ" if runtime_product.get("sales_mode") == "contact_only" else "Bán bình thường"
         stock_lines.append(f"Giao hàng: {mode_label}")
         stock_lines.append(f"Chế độ bán: {sales_mode_label}")
+        product_row = product_repository.get_product(product_id)
+        stock_lines.append(
+            "Mô tả riêng: Đã thiết lập"
+            if product_row is not None and str(product_row["description"] or "").strip()
+            else "Mô tả riêng: Chưa thiết lập"
+        )
         if runtime_product["supplier_product_id"]:
             stock_lines.append(f"Supplier ID: {runtime_product['supplier_product_id']}")
         stock_lines.append("Trạng thái: Đang hiển thị" if runtime_product["active"] else "Trạng thái: Đang ẩn")
@@ -1256,6 +1353,20 @@ def callback_query(call):
             )
         except Exception:
             pass
+        return
+
+    if call.data.startswith("admin_editdesc_"):
+        product_id = call.data.split("admin_editdesc_", 1)[1]
+        runtime_product = get_runtime_product(product_id)
+        if runtime_product is None:
+            bot.answer_callback_query(call.id, "❌ Sản phẩm không tồn tại!", show_alert=True)
+            return
+        msg = bot.send_message(
+            chat_id,
+            f"📝 Nhập mô tả riêng cho sản phẩm **{runtime_product['name']}**.\nGửi `-` để xóa mô tả.",
+            parse_mode="Markdown",
+        )
+        bot.register_next_step_handler(msg, admin_process_edit_product_description, product_id)
         return
 
     if call.data.startswith("admin_assigncategory_"):
@@ -1595,7 +1706,19 @@ def admin_process_create_category(message):
         bot.send_message(message.chat.id, "❌ Tên category không hợp lệ.")
         return
 
-    category = shop_service.create_category(message.text.strip())
+    category_name = message.text.strip()
+    msg = bot.send_message(
+        message.chat.id,
+        f"📝 Nhập mô tả cho category **{category_name}**.\nGửi `-` nếu muốn để trống.",
+        parse_mode="Markdown",
+    )
+    bot.register_next_step_handler(msg, admin_process_create_category_description, category_name)
+
+
+def admin_process_create_category_description(message, category_name):
+    raw = str(message.text or "")
+    description = "" if raw.strip() == "-" else raw.strip()
+    category = shop_service.create_category(category_name, description)
     bot.send_message(
         message.chat.id,
         f"✅ Đã tạo category thành công: {category['name']}\nDùng /admin để quản lý tiếp.",
@@ -1611,6 +1734,26 @@ def admin_process_edit_category(message, category_id):
     bot.send_message(
         message.chat.id,
         f"✅ Đã cập nhật category thành công: {category['name']}\nDùng /admin để quản lý tiếp.",
+    )
+
+
+def admin_process_edit_category_description(message, category_id):
+    raw = str(message.text or "")
+    description = "" if raw.strip() == "-" else raw.strip()
+    category = shop_service.update_category_description(category_id, description)
+    bot.send_message(
+        message.chat.id,
+        f"✅ Đã cập nhật mô tả cho category: {category['name']}",
+    )
+
+
+def admin_process_edit_product_description(message, product_id):
+    raw = str(message.text or "")
+    description = "" if raw.strip() == "-" else raw.strip()
+    product = shop_service.update_product_description(product_id, description)
+    bot.send_message(
+        message.chat.id,
+        f"✅ Đã cập nhật mô tả riêng cho sản phẩm: {product['name']}",
     )
 
 
