@@ -1,11 +1,32 @@
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import capcut_api
 
 
 class CapcutApiClientTests(unittest.TestCase):
+    def test_get_products_falls_back_to_urllib_when_no_powershell_is_available(self):
+        client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk-test")
+        response = MagicMock()
+        response.read.return_value = b'{"success": true, "products": [{"name": "CapCut Pro"}]}'
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        with patch.object(capcut_api.shutil, "which", side_effect=[None, None, None]), patch.object(
+            capcut_api.os.path, "exists", return_value=False
+        ), patch.object(capcut_api.subprocess, "run") as run_mock, patch.object(
+            capcut_api.urllib.request, "urlopen", return_value=response
+        ) as urlopen_mock:
+            data = client.get_products()
+
+        self.assertEqual(data["products"][0]["name"], "CapCut Pro")
+        self.assertFalse(run_mock.called)
+        request = urlopen_mock.call_args.args[0]
+        self.assertEqual(request.full_url, "http://node12.zampto.net:20291/api/products")
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.headers["X-api-key"], "sk-test")
+
     def test_get_products_falls_back_to_absolute_powershell_path_when_not_on_path(self):
         client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk-test")
 
