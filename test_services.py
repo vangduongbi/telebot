@@ -351,6 +351,92 @@ class CategoryServiceTests(SQLiteServiceTestCase):
         self.assertEqual(description, "")
 
 
+    def test_delete_category_products_deletes_all_clean_products(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Cat A")
+        prod1 = service.create_product("P1", "1.000đ")
+        prod2 = service.create_product("P2", "2.000đ")
+        service.assign_product_category(prod1["id"], category["id"])
+        service.assign_product_category(prod2["id"], category["id"])
+
+        summary = service.delete_category_products(category["id"])
+        repo = repositories.Repository(self.db_path)
+
+        self.assertEqual(summary["deleted_count"], 2)
+        self.assertEqual(set(summary["deleted_names"]), {"P1", "P2"})
+        self.assertEqual(summary["skipped_names"], [])
+        self.assertIsNone(repo.get_product(prod1["id"]))
+        self.assertIsNone(repo.get_product(prod2["id"]))
+
+    def test_delete_category_products_skips_product_with_stock_history(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Cat A")
+        clean = service.create_product("Clean", "1.000đ")
+        stocked = service.create_product("Stocked", "2.000đ")
+        service.assign_product_category(clean["id"], category["id"])
+        service.assign_product_category(stocked["id"], category["id"])
+
+        repo = repositories.Repository(self.db_path)
+        repo.add_stock_items(stocked["id"], ["email|pass"], "batch-1")
+
+        summary = service.delete_category_products(category["id"])
+
+        self.assertEqual(summary["deleted_count"], 1)
+        self.assertEqual(summary["deleted_names"], ["Clean"])
+        self.assertEqual(summary["skipped_names"], ["Stocked"])
+        self.assertIsNone(repo.get_product(clean["id"]))
+        self.assertIsNotNone(repo.get_product(stocked["id"]))
+
+    def test_delete_category_products_skips_product_with_order_history(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Cat A")
+        clean = service.create_product("Clean", "1.000đ")
+        ordered = service.create_product("Ordered", "2.000đ")
+        service.assign_product_category(clean["id"], category["id"])
+        service.assign_product_category(ordered["id"], category["id"])
+
+        repo = repositories.Repository(self.db_path)
+        repo.create_order(
+            order_id="ORD-1",
+            order_code=100001,
+            user_id=1,
+            username="@u",
+            full_name="User",
+            product_id=ordered["id"],
+            qty=1,
+            unit_price=2000,
+            total_amount=2000,
+            status="pending_payment",
+            payos_ref=None,
+            note=None,
+            created_at=123,
+        )
+
+        summary = service.delete_category_products(category["id"])
+
+        self.assertEqual(summary["deleted_count"], 1)
+        self.assertEqual(summary["deleted_names"], ["Clean"])
+        self.assertEqual(summary["skipped_names"], ["Ordered"])
+        self.assertIsNone(repo.get_product(clean["id"]))
+        self.assertIsNotNone(repo.get_product(ordered["id"]))
+
+    def test_delete_category_products_returns_zero_for_empty_category(self):
+        service = services.ShopService(self.db_path)
+        category = service.create_category("Empty")
+
+        summary = service.delete_category_products(category["id"])
+
+        self.assertEqual(summary["deleted_count"], 0)
+        self.assertEqual(summary["deleted_names"], [])
+        self.assertEqual(summary["skipped_names"], [])
+
+    def test_delete_category_products_raises_for_missing_category(self):
+        service = services.ShopService(self.db_path)
+
+        with self.assertRaisesRegex(ValueError, "Category does not exist"):
+            service.delete_category_products("cat_missing")
+
+
 class CapcutSyncServiceTests(SQLiteServiceTestCase):
     def test_sync_capcut_products_creates_category_and_new_products(self):
         service = services.ShopService(self.db_path)

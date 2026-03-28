@@ -97,6 +97,28 @@ class ShopService:
             raise ValueError("Category does not exist")
         self.repo.delete_category(category_id)
 
+    def delete_category_products(self, category_id):
+        category = self.repo.get_category(category_id)
+        if category is None:
+            raise ValueError("Category does not exist")
+
+        products = self.repo.list_products_for_category_management(category_id)
+        deleted_names = []
+        skipped_names = []
+
+        for product in products:
+            if self.repo.product_has_history(product["id"]):
+                skipped_names.append(product["name"])
+                continue
+            self.repo.delete_product_hard(product["id"])
+            deleted_names.append(product["name"])
+
+        return {
+            "deleted_count": len(deleted_names),
+            "deleted_names": deleted_names,
+            "skipped_names": skipped_names,
+        }
+
     def create_product(self, name, price, description=""):
         product_name = str(name or "").strip()
         product_description = str(description or "").strip()
