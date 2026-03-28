@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import subprocess
 
 
@@ -8,6 +10,19 @@ class CapcutApiError(Exception):
 
 def _ps_single_quote(value):
     return str(value).replace("'", "''")
+
+
+def _resolve_powershell_executable():
+    for candidate in ("powershell", "powershell.exe", "pwsh"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    fallback = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    if os.path.exists(fallback):
+        return fallback
+    return "powershell"
 
 
 class CapcutApiClient:
@@ -40,7 +55,7 @@ class CapcutApiClient:
 
     def _request_json(self, method, path, body=None):
         command = [
-            "powershell",
+            _resolve_powershell_executable(),
             "-NoProfile",
             "-Command",
             self._build_powershell_script(method, path, body),
