@@ -6,6 +6,26 @@ import supplier_api
 
 
 class SupplierApiClientTests(unittest.TestCase):
+    def test_get_balance_falls_back_to_absolute_powershell_path_when_not_on_path(self):
+        client = supplier_api.SupplierApiClient("https://sumistore.me/api", "TAPI-KEY")
+
+        with patch.object(supplier_api.shutil, "which", side_effect=[None, None, None]), patch.object(
+            supplier_api.os.path, "exists", return_value=True
+        ), patch.object(supplier_api.subprocess, "run") as run_mock:
+            run_mock.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='{"success": true, "balance": 7000}',
+                stderr="",
+            )
+
+            client.get_balance()
+
+        self.assertEqual(
+            run_mock.call_args.kwargs["args"][0].lower(),
+            r"c:\windows\system32\windowspowershell\v1.0\powershell.exe",
+        )
+
     def test_get_balance_uses_powershell_and_parses_json(self):
         client = supplier_api.SupplierApiClient("https://sumistore.me/api", "TAPI-KEY")
 

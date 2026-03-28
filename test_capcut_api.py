@@ -6,6 +6,26 @@ import capcut_api
 
 
 class CapcutApiClientTests(unittest.TestCase):
+    def test_get_products_falls_back_to_absolute_powershell_path_when_not_on_path(self):
+        client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk-test")
+
+        with patch.object(capcut_api.shutil, "which", side_effect=[None, None, None]), patch.object(
+            capcut_api.os.path, "exists", return_value=True
+        ), patch.object(capcut_api.subprocess, "run") as run_mock:
+            run_mock.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='{"success": true, "products": []}',
+                stderr="",
+            )
+
+            client.get_products()
+
+        self.assertEqual(
+            run_mock.call_args.kwargs["args"][0].lower(),
+            r"c:\windows\system32\windowspowershell\v1.0\powershell.exe",
+        )
+
     def test_get_products_uses_api_key_header(self):
         client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk-test")
 
