@@ -227,6 +227,21 @@ class Repository:
         finally:
             conn.close()
 
+    def list_products_for_category_management(self, category_id):
+        conn = database.get_connection(self.db_path)
+        try:
+            return conn.execute(
+                """
+                SELECT *
+                FROM products
+                WHERE category_id = ?
+                ORDER BY id
+                """,
+                (category_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+
     def update_product_name(self, product_id, name):
         now = self._now()
         with database.transaction(self.db_path) as conn:
@@ -415,6 +430,27 @@ class Repository:
                 "SELECT * FROM products WHERE id = ?",
                 (product_id,),
             ).fetchone()
+
+    def product_has_history(self, product_id):
+        conn = database.get_connection(self.db_path)
+        try:
+            has_order = conn.execute(
+                "SELECT 1 FROM orders WHERE product_id = ? LIMIT 1",
+                (product_id,),
+            ).fetchone()
+            if has_order is not None:
+                return True
+            has_stock = conn.execute(
+                "SELECT 1 FROM stock_items WHERE product_id = ? LIMIT 1",
+                (product_id,),
+            ).fetchone()
+            return has_stock is not None
+        finally:
+            conn.close()
+
+    def delete_product_hard(self, product_id):
+        with database.transaction(self.db_path) as conn:
+            conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
 
     def add_stock_items(self, product_id, contents, batch_id):
         if isinstance(contents, (str, bytes, bytearray)):

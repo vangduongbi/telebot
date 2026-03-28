@@ -305,6 +305,48 @@ class ProductRepositoryTests(SQLiteTestCase):
 
         self.assertEqual([row["id"] for row in rows], ["prod_1"])
 
+    def test_product_has_history_false_for_clean_product(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_clean", "Clean product", 1000)
+
+        self.assertFalse(repo.product_has_history("prod_clean"))
+
+    def test_product_has_history_true_when_stock_exists(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_stock", "Stocked product", 1000)
+        repo.add_stock_items("prod_stock", ["email|pass"], "batch-1")
+
+        self.assertTrue(repo.product_has_history("prod_stock"))
+
+    def test_product_has_history_true_when_order_exists(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_order", "Ordered product", 1000)
+        repo.create_order(
+            order_id="ORD-1",
+            order_code=100001,
+            user_id=1,
+            username="@u",
+            full_name="User",
+            product_id="prod_order",
+            qty=1,
+            unit_price=1000,
+            total_amount=1000,
+            status="pending_payment",
+            payos_ref=None,
+            note=None,
+            created_at=123,
+        )
+
+        self.assertTrue(repo.product_has_history("prod_order"))
+
+    def test_delete_product_hard_removes_clean_product(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_clean", "Clean product", 1000)
+
+        repo.delete_product_hard("prod_clean")
+
+        self.assertIsNone(repo.get_product("prod_clean"))
+
     def test_add_stock_items_persists_one_row_per_content(self):
         repo = repositories.Repository(self.db_path)
         repo.create_product("prod_1", "Product A", 100000)
