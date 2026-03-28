@@ -1,11 +1,32 @@
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import supplier_api
 
 
 class SupplierApiClientTests(unittest.TestCase):
+    def test_get_balance_falls_back_to_urllib_when_no_powershell_is_available(self):
+        client = supplier_api.SupplierApiClient("https://sumistore.me/api", "TAPI-KEY")
+        response = MagicMock()
+        response.read.return_value = b'{"success": true, "balance": 7000}'
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        with patch.object(supplier_api.shutil, "which", side_effect=[None, None, None]), patch.object(
+            supplier_api.os.path, "exists", return_value=False
+        ), patch.object(supplier_api.subprocess, "run") as run_mock, patch.object(
+            supplier_api.urllib.request, "urlopen", return_value=response
+        ) as urlopen_mock:
+            data = client.get_balance()
+
+        self.assertEqual(data["balance"], 7000)
+        self.assertFalse(run_mock.called)
+        request = urlopen_mock.call_args.args[0]
+        self.assertEqual(request.full_url, "https://sumistore.me/api/tele-balance")
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(request.headers["X-tele-api-id"], "TAPI-KEY")
+
     def test_get_balance_falls_back_to_absolute_powershell_path_when_not_on_path(self):
         client = supplier_api.SupplierApiClient("https://sumistore.me/api", "TAPI-KEY")
 

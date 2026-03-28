@@ -2,6 +2,8 @@ import json
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 
 
 class CapcutApiError(Exception):
@@ -22,7 +24,7 @@ def _resolve_powershell_executable():
     fallback = os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     if os.path.exists(fallback):
         return fallback
-    return "powershell"
+    return None
 
 
 class CapcutApiClient:
@@ -54,8 +56,12 @@ class CapcutApiClient:
         return "; ".join(lines)
 
     def _request_json(self, method, path, body=None):
+        powershell = _resolve_powershell_executable()
+        if not powershell:
+            return self._request_json_via_urllib(method, path, body)
+
         command = [
-            _resolve_powershell_executable(),
+            powershell,
             "-NoProfile",
             "-Command",
             self._build_powershell_script(method, path, body),
@@ -74,6 +80,33 @@ class CapcutApiClient:
 
         try:
             data = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise CapcutApiError("Invalid CapCut API response") from exc
+
+        if not data.get("success"):
+            raise CapcutApiError(data.get("message") or data.get("code") or "CapCut request failed")
+        return data
+
+    def _request_json_via_urllib(self, method, path, body=None):
+        url = f"{self.base_url}{path}"
+        data = None
+        headers = {"X-API-Key": self.api_key}
+        if body is not None:
+            data = json.dumps(body, separators=(",", ":")).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        request = urllib.request.Request(url, data=data, headers=headers, method=str(method).upper())
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            message = exc.read().decode("utf-8", errors="replace").strip() or str(exc)
+            raise CapcutApiError(message) from exc
+        except urllib.error.URLError as exc:
+            raise CapcutApiError(str(exc.reason or exc)) from exc
+
+        try:
+            data = json.loads(payload)
         except json.JSONDecodeError as exc:
             raise CapcutApiError("Invalid CapCut API response") from exc
 
