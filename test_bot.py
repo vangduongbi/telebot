@@ -679,6 +679,61 @@ class UserHomeFlowTests(unittest.TestCase):
         )
         self.assertEqual(product_button.url, "https://t.me/libi94")
         self.assertIsNone(product_button.callback_data)
+ 
+    def test_quantity_screen_uses_category_description_when_product_description_is_empty(self):
+        category = self.service.create_category("Google AI", "Shared category note")
+        product = self.service.create_product("Google AI Pro 1 năm", "50.000đ")
+        self.service.assign_product_category(product["id"], category["id"])
+        self.service.add_product_stock(product["id"], "mail@example.com|pass|2fa")
+        call = SimpleNamespace(
+            data=f"buy_{product['id']}",
+            id="products-desc-1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=10),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("Shared category note", text)
+
+    def test_quantity_screen_prefers_product_description_over_category_description(self):
+        category = self.service.create_category("Google AI", "Shared category note")
+        product = self.service.create_product("Google AI Pro 1 năm", "50.000đ")
+        self.service.assign_product_category(product["id"], category["id"])
+        self.service.update_product_description(product["id"], "Product-specific note")
+        self.service.add_product_stock(product["id"], "mail@example.com|pass|2fa")
+        call = SimpleNamespace(
+            data=f"buy_{product['id']}",
+            id="products-desc-2",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=10),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("Product-specific note", text)
+        self.assertNotIn("Shared category note", text)
+
+    def test_quantity_screen_omits_description_when_both_are_empty(self):
+        product = self.service.create_product("Google AI Pro 1 năm", "50.000đ")
+        self.service.add_product_stock(product["id"], "mail@example.com|pass|2fa")
+        call = SimpleNamespace(
+            data=f"buy_{product['id']}",
+            id="products-desc-3",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=10),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertNotIn("Shared category note", text)
+        self.assertNotIn("Product-specific note", text)
 
 
 class CategoryBotFlowTests(unittest.TestCase):

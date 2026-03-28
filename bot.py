@@ -1072,11 +1072,18 @@ def callback_query(call):
         stock_line = f"📦 Tồn kho: {runtime_product['available']}"
         if runtime_product["fulfillment_mode"] == "supplier_api":
             stock_line = f"🌐 Còn: {runtime_product['available']}"
+        description = ""
+        try:
+            description = shop_service.get_resolved_product_description(product_id)
+        except Exception:
+            description = ""
+        description_block = f"\n\n{description}" if str(description or "").strip() else ""
 
         try:
             bot.edit_message_text(
                 f"🛒 Bạn đang chọn mua: **{runtime_product['name']}**\n"
-                f"{stock_line}\n\n"
+                f"{stock_line}"
+                f"{description_block}\n\n"
                 "👇 Vui lòng chọn số lượng bạn muốn mua:",
                 chat_id=chat_id,
                 message_id=msg_id,
