@@ -288,14 +288,29 @@ class SupplierProcessPurchaseTests(unittest.TestCase):
         bot.product_repository = self.repo
         bot.shop_service = self.service
         self.service.set_payos_config("client", "api", "checksum")
+        self.service.create_supplier_provider(
+            "sumistore_default",
+            "SumiStore Default",
+            "sumistore",
+            "https://sumistore.me/api",
+            "api-test",
+        )
+        self.service.create_supplier_provider(
+            "capcut_default",
+            "CapCut Default",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
 
         product = self.service.create_product("ChatGPT Plus cá nhân", "100.000đ")
         self.service.update_product_fulfillment_mode(product["id"], "supplier_api")
+        self.service.update_product_supplier_provider(product["id"], "sumistore_default")
         self.service.update_product_supplier_product_id(product["id"], "SP-GEF55PBV")
         self.product_id = product["id"]
         self.capcut_product = self.service.create_product("CapCut Pro 1 thÃ¡ng", "60.000Ä‘")
         self.service.update_product_fulfillment_mode(self.capcut_product["id"], "supplier_api")
-        self.service.update_product_supplier_provider(self.capcut_product["id"], "capcut_api")
+        self.service.update_product_supplier_provider(self.capcut_product["id"], "capcut_default")
         self.service.update_product_supplier_product_id(self.capcut_product["id"], "cc_1")
         self.user = SimpleNamespace(id=10, username="buyer", first_name="Buyer", last_name=None)
 
@@ -426,6 +441,13 @@ class SupplierProcessPurchaseTests(unittest.TestCase):
         items = self.repo.list_order_items(order["id"])
         self.assertEqual(order_row["status"], "delivered")
         self.assertEqual(items[0]["delivered_content"], "capcut@example.com|pass")
+
+    def test_get_runtime_product_returns_zero_when_provider_is_inactive(self):
+        self.service.set_supplier_provider_active("capcut_default", False)
+
+        runtime_product = bot.get_runtime_product(self.capcut_product["id"])
+
+        self.assertEqual(runtime_product["available"], 0)
 
 
 class ProductListEmojiTests(unittest.TestCase):
@@ -1154,6 +1176,69 @@ class SQLiteAdminFlowTests(unittest.TestCase):
         button_texts = [button.text for row in reply_markup.keyboard for button in row]
         self.assertIn("🔄 Sync CapCut", button_texts)
 
+    def test_show_admin_menu_includes_manage_providers_button(self):
+        bot.show_admin_menu(123)
+
+        reply_markup = bot.bot.messages[0][2]["reply_markup"]
+        button_texts = [button.text for row in reply_markup.keyboard for button in row]
+        self.assertIn("🔌 Quản lý Provider API", button_texts)
+
+    def test_admin_manage_providers_opens_provider_list(self):
+        self.service.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
+        call = SimpleNamespace(
+            data="admin_manage_providers",
+            id="providers1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        self.assertIn("Provider API", bot.bot.edits[0][2])
+        markup = bot.bot.edits[0][3]["reply_markup"]
+        button_texts = [button.text for row in markup.keyboard for button in row]
+        self.assertTrue(any("Node12" in text for text in button_texts))
+
+    def test_admin_process_create_supplier_provider_persists_provider(self):
+        message = SimpleNamespace(
+            chat=SimpleNamespace(id=123),
+            text="node12 | Node12 | node_api | http://node12.zampto.net:20291/api | sk-test",
+        )
+
+        bot.admin_process_create_supplier_provider(message)
+
+        provider = self.repo.get_supplier_provider("node12")
+        self.assertIsNotNone(provider)
+        self.assertEqual(provider["name"], "Node12")
+        self.assertEqual(provider["protocol"], "node_api")
+
+    def test_admin_toggle_supplier_provider_updates_status(self):
+        self.service.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
+        call = SimpleNamespace(
+            data="admin_toggleprovider_node12",
+            id="providers2",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        provider = self.repo.get_supplier_provider("node12")
+        self.assertEqual(provider["is_active"], 0)
+
     def test_show_admin_menu_lists_hidden_products_with_restore_button(self):
         product = self.service.create_product("Hidden Product", "10.000d")
         self.service.deactivate_product(product["id"])
@@ -1294,6 +1379,67 @@ class SQLiteAdminFlowTests(unittest.TestCase):
 
         stored = self.repo.get_product(product["id"])
         self.assertEqual(stored["description"], "")
+
+    def test_show_product_supplier_config_displays_provider_and_protocol(self):
+        product = self.service.create_product("Supplier Product", "20.000d")
+        self.service.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
+        self.service.update_product_fulfillment_mode(product["id"], "supplier_api")
+        self.service.update_product_supplier_provider(product["id"], "node12")
+        self.service.update_product_supplier_product_id(product["id"], "grok_1")
+
+        bot.show_product_supplier_config(123, 1, product["id"])
+
+        self.assertEqual(len(bot.bot.edits), 1)
+        text = bot.bot.edits[0][2]
+        self.assertIn("Provider", text)
+        self.assertIn("Node12", text)
+        self.assertIn("Protocol", text)
+        self.assertIn("node_api", text)
+
+    def test_admin_select_supplier_provider_assigns_provider_to_product(self):
+        product = self.service.create_product("Supplier Product", "20.000d")
+        self.service.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
+        call = SimpleNamespace(
+            data=f"admin_applysupplierprovider|{product['id']}|node12",
+            id="provider3",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        stored = self.repo.get_product(product["id"])
+        self.assertEqual(stored["supplier_provider"], "node12")
+
+    def test_admin_process_supplier_product_id_keeps_existing_provider(self):
+        product = self.service.create_product("Supplier Product", "20.000d")
+        self.service.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
+        self.service.update_product_supplier_provider(product["id"], "node12")
+        message = SimpleNamespace(chat=SimpleNamespace(id=123), text="grok_1")
+
+        bot.admin_process_supplier_product_id(message, product["id"])
+
+        stored = self.repo.get_product(product["id"])
+        self.assertEqual(stored["supplier_provider"], "node12")
+        self.assertEqual(stored["supplier_product_id"], "grok_1")
 
     def test_admin_process_lookup_order_shows_delivered_accounts(self):
         product = self.service.create_product("Lookup Product", "15.000d")

@@ -40,6 +40,18 @@ def init_db(db_path="shop.db"):
                 FOREIGN KEY (category_id) REFERENCES categories(id)
             );
 
+            CREATE TABLE IF NOT EXISTS supplier_providers (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                protocol TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key TEXT,
+                overrides_json TEXT NOT NULL DEFAULT '{}',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS stock_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 product_id TEXT NOT NULL,

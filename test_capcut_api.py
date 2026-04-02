@@ -6,6 +6,27 @@ import capcut_api
 
 
 class CapcutApiClientTests(unittest.TestCase):
+    def test_get_products_logs_request_when_api_debug_enabled(self):
+        client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk_test_key_1234")
+
+        with patch.dict(capcut_api.os.environ, {"API_DEBUG": "1"}, clear=False), patch.object(
+            capcut_api.subprocess, "run"
+        ) as run_mock, patch("builtins.print") as print_mock:
+            run_mock.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='{"success": true, "products": []}',
+                stderr="",
+            )
+
+            client.get_products()
+
+        printed = "\n".join(" ".join(str(arg) for arg in call.args) for call in print_mock.call_args_list)
+        self.assertIn("http://node12.zampto.net:20291/api/products", printed)
+        self.assertIn("GET", printed)
+        self.assertIn("sk_t...1234", printed)
+        self.assertNotIn("sk_test_key_1234", printed)
+
     def test_get_products_falls_back_to_urllib_when_no_powershell_is_available(self):
         client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk-test")
         response = MagicMock()
