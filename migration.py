@@ -5,7 +5,27 @@ from collections import Counter, defaultdict
 import database
 
 
-MIGRATION_VERSION = 2
+MIGRATION_VERSION = 3
+
+COMPATIBILITY_PROVIDER_DEFAULTS = {
+    "sumistore_default": {
+        "name": "SumiStore Default",
+        "protocol": "sumistore",
+        "base_url": "https://sumistore.me/api",
+        "api_key": "TAPI-XD2CGJRB398MTAFBDYHO",
+    },
+    "capcut_default": {
+        "name": "CapCut Default",
+        "protocol": "node_api",
+        "base_url": "http://node12.zampto.net:20291/api",
+        "api_key": "sk_4cc3773eeab08fc6c32aee2d4e0461f67b6a206077b5f818",
+    },
+}
+
+LEGACY_PROVIDER_REMAP = {
+    "sumistore": "sumistore_default",
+    "capcut_api": "capcut_default",
+}
 
 
 def parse_price_to_int(price_text):
@@ -232,10 +252,67 @@ def _cleanup_orphaned_migration_stock_items(conn):
     )
 
 
+def _seed_compatibility_supplier_providers(conn):
+    legacy_provider_values = {
+        row["supplier_provider"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT supplier_provider
+            FROM products
+            WHERE supplier_provider IS NOT NULL AND supplier_provider != ''
+            """
+        ).fetchall()
+    }
+
+    now = int(time.time())
+    for legacy_provider, provider_code in LEGACY_PROVIDER_REMAP.items():
+        if legacy_provider not in legacy_provider_values:
+            continue
+        config = COMPATIBILITY_PROVIDER_DEFAULTS[provider_code]
+        conn.execute(
+            """
+            INSERT INTO supplier_providers (
+                code, name, protocol, base_url, api_key, overrides_json,
+                is_active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, '{}', 1, ?, ?)
+            ON CONFLICT(code) DO UPDATE SET
+                name = excluded.name,
+                protocol = excluded.protocol,
+                base_url = excluded.base_url,
+                api_key = excluded.api_key,
+                updated_at = excluded.updated_at
+            """,
+            (
+                provider_code,
+                config["name"],
+                config["protocol"],
+                config["base_url"],
+                config["api_key"],
+                now,
+                now,
+            ),
+        )
+
+
+def _remap_legacy_product_supplier_provider_codes(conn):
+    for legacy_provider, provider_code in LEGACY_PROVIDER_REMAP.items():
+        conn.execute(
+            """
+            UPDATE products
+            SET supplier_provider = ?
+            WHERE supplier_provider = ?
+            """,
+            (provider_code, legacy_provider),
+        )
+
+
 def migrate_json_to_sqlite(data, db_path="shop.db"):
     database.init_db(db_path)
     with database.transaction(db_path) as conn:
         _cleanup_orphaned_migration_stock_items(conn)
+        _seed_compatibility_supplier_providers(conn)
+        _remap_legacy_product_supplier_provider_codes(conn)
         if _migration_complete_for_data(conn, data):
             if not _is_already_migrated(conn):
                 _mark_migrated(conn)

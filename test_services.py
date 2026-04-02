@@ -220,11 +220,18 @@ class AdminProductServiceTests(SQLiteServiceTestCase):
     def test_update_product_supplier_provider(self):
         service = services.ShopService(self.db_path)
         product = service.create_product("CapCut Product", "30.000Ã„â€˜")
+        service.create_supplier_provider(
+            "capcut_default",
+            "CapCut Default",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
 
-        service.update_product_supplier_provider(product["id"], "capcut_api")
+        service.update_product_supplier_provider(product["id"], "capcut_default")
 
         stored = repositories.Repository(self.db_path).get_product(product["id"])
-        self.assertEqual(stored["supplier_provider"], "capcut_api")
+        self.assertEqual(stored["supplier_provider"], "capcut_default")
 
 
     def test_update_product_description(self):
@@ -235,6 +242,71 @@ class AdminProductServiceTests(SQLiteServiceTestCase):
 
         stored = repositories.Repository(self.db_path).get_product(product["id"])
         self.assertEqual(stored["description"], "Product override")
+
+
+class SupplierProviderServiceTests(SQLiteServiceTestCase):
+    def test_create_supplier_provider_validates_required_fields(self):
+        service = services.ShopService(self.db_path)
+
+        with self.assertRaisesRegex(ValueError, "Provider code is required"):
+            service.create_supplier_provider("", "Node12", "node_api", "http://node12.zampto.net:20291/api")
+
+        with self.assertRaisesRegex(ValueError, "Provider name is required"):
+            service.create_supplier_provider("node12", "", "node_api", "http://node12.zampto.net:20291/api")
+
+        with self.assertRaisesRegex(ValueError, "Provider protocol is required"):
+            service.create_supplier_provider("node12", "Node12", "", "http://node12.zampto.net:20291/api")
+
+        with self.assertRaisesRegex(ValueError, "Provider base URL is required"):
+            service.create_supplier_provider("node12", "Node12", "node_api", "")
+
+        with self.assertRaisesRegex(ValueError, "Invalid overrides JSON"):
+            service.create_supplier_provider(
+                "node12",
+                "Node12",
+                "node_api",
+                "http://node12.zampto.net:20291/api",
+                overrides_json="{invalid",
+            )
+
+    def test_list_supplier_providers_returns_created_provider(self):
+        service = services.ShopService(self.db_path)
+
+        service.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+            '{"products_path":"/products"}',
+        )
+
+        rows = service.list_supplier_providers()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["code"], "node12")
+        self.assertEqual(rows[0]["protocol"], "node_api")
+
+    def test_update_product_supplier_provider_requires_existing_provider(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Provider Product", "30.000đ")
+
+        with self.assertRaisesRegex(ValueError, "Supplier provider does not exist"):
+            service.update_product_supplier_provider(product["id"], "node12")
+
+    def test_delete_supplier_provider_rejects_when_products_still_reference_it(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Provider Product", "30.000đ")
+        service.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+        )
+        service.update_product_supplier_provider(product["id"], "node12")
+
+        with self.assertRaisesRegex(ValueError, "Supplier provider is still in use"):
+            service.delete_supplier_provider("node12")
 
 
 class CategoryServiceTests(SQLiteServiceTestCase):
@@ -460,14 +532,21 @@ class CapcutSyncServiceTests(SQLiteServiceTestCase):
         self.assertEqual(products[0]["name"], "CapCut Pro 1 tháng")
         self.assertEqual(products[0]["price"], 30000)
         self.assertEqual(products[0]["fulfillment_mode"], "supplier_api")
-        self.assertEqual(products[0]["supplier_provider"], "capcut_api")
+        self.assertEqual(products[0]["supplier_provider"], "capcut_default")
         self.assertEqual(products[0]["supplier_product_id"], "cc_1")
 
     def test_sync_capcut_products_updates_name_but_keeps_existing_price(self):
         service = services.ShopService(self.db_path)
         product = service.create_product("Old CapCut Name", "99.000đ")
+        service.create_supplier_provider(
+            "capcut_default",
+            "CapCut Default",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
         service.update_product_fulfillment_mode(product["id"], "supplier_api")
-        service.update_product_supplier_provider(product["id"], "capcut_api")
+        service.update_product_supplier_provider(product["id"], "capcut_default")
         service.update_product_supplier_product_id(product["id"], "cc_1")
 
         summary = service.sync_capcut_products(
@@ -484,8 +563,15 @@ class CapcutSyncServiceTests(SQLiteServiceTestCase):
     def test_sync_capcut_products_hides_removed_products(self):
         service = services.ShopService(self.db_path)
         product = service.create_product("CapCut Old", "30.000đ")
+        service.create_supplier_provider(
+            "capcut_default",
+            "CapCut Default",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+        )
         service.update_product_fulfillment_mode(product["id"], "supplier_api")
-        service.update_product_supplier_provider(product["id"], "capcut_api")
+        service.update_product_supplier_provider(product["id"], "capcut_default")
         service.update_product_supplier_product_id(product["id"], "cc_old")
 
         summary = service.sync_capcut_products(

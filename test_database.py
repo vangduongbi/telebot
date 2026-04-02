@@ -113,6 +113,17 @@ class DatabaseSchemaTests(SQLiteTestCase):
             }
 
             expected_columns = {
+                "supplier_providers": [
+                    "code",
+                    "name",
+                    "protocol",
+                    "base_url",
+                    "api_key",
+                    "overrides_json",
+                    "is_active",
+                    "created_at",
+                    "updated_at",
+                ],
                 "products": [
                     "id",
                     "name",
@@ -202,6 +213,128 @@ class DatabaseSchemaTests(SQLiteTestCase):
 
 
 class ConfigMigrationTests(SQLiteTestCase):
+    def test_migrate_json_seeds_compatibility_supplier_providers(self):
+        conn = database.get_connection(self.db_path)
+        try:
+            insert_product(conn, "prod_capcut")
+            insert_product(conn, "prod_sumi")
+            conn.execute(
+                "UPDATE products SET supplier_provider = ?, supplier_product_id = ? WHERE id = ?",
+                ("capcut_api", "cc_1", "prod_capcut"),
+            )
+            conn.execute(
+                "UPDATE products SET supplier_provider = ?, supplier_product_id = ? WHERE id = ?",
+                ("sumistore", "SP-1", "prod_sumi"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        migration.migrate_json_to_sqlite(
+            {
+                "products": {
+                    "prod_capcut": {"name": "Product", "price": "100000", "stock": []},
+                    "prod_sumi": {"name": "Product", "price": "100000", "stock": []},
+                },
+                "orders": {},
+                "config": {},
+            },
+            self.db_path,
+        )
+
+        conn = database.get_connection(self.db_path)
+        try:
+            rows = conn.execute(
+                """
+                SELECT code, name, protocol, base_url, api_key, is_active
+                FROM supplier_providers
+                ORDER BY code
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            rows_as_dicts(rows),
+            [
+                {
+                    "code": "capcut_default",
+                    "name": "CapCut Default",
+                    "protocol": "node_api",
+                    "base_url": "http://node12.zampto.net:20291/api",
+                    "api_key": "sk_4cc3773eeab08fc6c32aee2d4e0461f67b6a206077b5f818",
+                    "is_active": 1,
+                },
+                {
+                    "code": "sumistore_default",
+                    "name": "SumiStore Default",
+                    "protocol": "sumistore",
+                    "base_url": "https://sumistore.me/api",
+                    "api_key": "TAPI-XD2CGJRB398MTAFBDYHO",
+                    "is_active": 1,
+                },
+            ],
+        )
+
+    def test_migrate_json_remaps_legacy_product_supplier_provider_values(self):
+        conn = database.get_connection(self.db_path)
+        try:
+            insert_product(conn, "prod_capcut")
+            insert_product(conn, "prod_sumi")
+            conn.execute(
+                "UPDATE products SET supplier_provider = ?, supplier_product_id = ? WHERE id = ?",
+                ("capcut_api", "cc_1", "prod_capcut"),
+            )
+            conn.execute(
+                "UPDATE products SET supplier_provider = ?, supplier_product_id = ? WHERE id = ?",
+                ("sumistore", "SP-1", "prod_sumi"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        migration.migrate_json_to_sqlite(
+            {
+                "products": {
+                    "prod_capcut": {"name": "Product", "price": "100000", "stock": []},
+                    "prod_sumi": {"name": "Product", "price": "100000", "stock": []},
+                },
+                "orders": {},
+                "config": {},
+            },
+            self.db_path,
+        )
+
+        conn = database.get_connection(self.db_path)
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, supplier_provider, supplier_product_id
+                FROM products
+                WHERE id IN (?, ?)
+                ORDER BY id
+                """,
+                ("prod_capcut", "prod_sumi"),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        self.assertEqual(
+            rows_as_dicts(rows),
+            [
+                {
+                    "id": "prod_capcut",
+                    "supplier_provider": "capcut_default",
+                    "supplier_product_id": "cc_1",
+                },
+                {
+                    "id": "prod_sumi",
+                    "supplier_provider": "sumistore_default",
+                    "supplier_product_id": "SP-1",
+                },
+            ],
+        )
+
     def test_migrate_json_copies_payos_config_into_app_config(self):
         migration.migrate_json_to_sqlite(
             {
@@ -282,6 +415,70 @@ class ProductRepositoryTests(SQLiteTestCase):
         row = repo.update_product_supplier_provider("prod_1", "capcut_api")
 
         self.assertEqual(row["supplier_provider"], "capcut_api")
+
+    def test_create_supplier_provider_persists_row(self):
+        repo = repositories.Repository(self.db_path)
+
+        row = repo.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+            '{"products_path":"/products"}',
+        )
+
+        self.assertEqual(row["code"], "node12")
+        self.assertEqual(row["name"], "Node12")
+        self.assertEqual(row["protocol"], "node_api")
+        self.assertEqual(row["base_url"], "http://node12.zampto.net:20291/api")
+        self.assertEqual(row["api_key"], "sk-test")
+        self.assertEqual(row["overrides_json"], '{"products_path":"/products"}')
+        self.assertEqual(row["is_active"], 1)
+
+    def test_update_supplier_provider_fields(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_supplier_provider(
+            "node12",
+            "Node12",
+            "node_api",
+            "http://node12.zampto.net:20291/api",
+            "sk-test",
+            "{}",
+        )
+
+        row = repo.update_supplier_provider_name("node12", "Node12 Grok")
+        self.assertEqual(row["name"], "Node12 Grok")
+        row = repo.update_supplier_provider_protocol("node12", "sumistore")
+        self.assertEqual(row["protocol"], "sumistore")
+        row = repo.update_supplier_provider_base_url("node12", "https://sumistore.me/api")
+        self.assertEqual(row["base_url"], "https://sumistore.me/api")
+        row = repo.update_supplier_provider_api_key("node12", "api-new")
+        self.assertEqual(row["api_key"], "api-new")
+        row = repo.update_supplier_provider_overrides("node12", '{"buy_path":"/buy"}')
+        self.assertEqual(row["overrides_json"], '{"buy_path":"/buy"}')
+        row = repo.set_supplier_provider_active("node12", False)
+        self.assertEqual(row["is_active"], 0)
+
+    def test_list_supplier_providers_orders_by_name(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_supplier_provider("b", "Beta", "node_api", "http://b.test/api", "k2", "{}")
+        repo.create_supplier_provider("a", "Alpha", "sumistore", "http://a.test/api", "k1", "{}")
+
+        rows = repo.list_supplier_providers()
+
+        self.assertEqual([row["code"] for row in rows], ["a", "b"])
+
+    def test_count_products_by_supplier_provider_code(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_1", "Product A", 100000)
+        repo.create_product("prod_2", "Product B", 120000)
+        repo.update_product_supplier_provider("prod_1", "node12")
+        repo.update_product_supplier_provider("prod_2", "node12")
+
+        count = repo.count_products_by_supplier_provider("node12")
+
+        self.assertEqual(count, 2)
 
     def test_get_product_by_supplier_mapping(self):
         repo = repositories.Repository(self.db_path)
@@ -1206,7 +1403,7 @@ class MigrationTests(SQLiteTestCase):
 
             self.assertEqual([row["id"] for row in rows], ["ORD-1", "OTHER-1", "WEB-1"])
             self.assertEqual([row["order_code"] for row in rows], [7778, 7777, 7779])
-            self.assertEqual(version, 2)
+            self.assertEqual(version, migration.MIGRATION_VERSION)
         finally:
             conn.close()
 
@@ -1806,7 +2003,7 @@ class MigrationTests(SQLiteTestCase):
             self.assertEqual(order_item["product_id"], "prod_1")
             self.assertEqual(order_item["stock_item_id"], 1)
             self.assertEqual(order_item["content"], "shared")
-            self.assertEqual(version, 2)
+            self.assertEqual(version, migration.MIGRATION_VERSION)
         finally:
             conn.close()
 
@@ -1967,7 +2164,7 @@ class MigrationTests(SQLiteTestCase):
             self.assertEqual(orders_count, 1)
             self.assertEqual(order_items_count, 1)
             self.assertEqual(stock_items_count, 1)
-            self.assertEqual(version, 2)
+            self.assertEqual(version, migration.MIGRATION_VERSION)
             self.assertEqual(before_snapshot["products"], after_snapshot["products"])
             self.assertEqual(before_snapshot["orders"], after_snapshot["orders"])
             self.assertEqual(before_snapshot["order_items"], after_snapshot["order_items"])
@@ -2132,7 +2329,7 @@ class MigrationTests(SQLiteTestCase):
             self.assertEqual(before_snapshot, after_snapshot)
             self.assertEqual(before_total_stock_items, 2)
             self.assertEqual(after_total_stock_items, 1)
-            self.assertEqual(version, 2)
+            self.assertEqual(version, migration.MIGRATION_VERSION)
         finally:
             conn.close()
 

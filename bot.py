@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import time
+import urllib.parse
 
 import qrcode
 import telebot
@@ -15,6 +16,7 @@ import repositories
 import services
 from capcut_api import CapcutApiClient, CapcutApiError
 from supplier_api import SupplierApiClient, SupplierApiError
+from supplier_runtime import SupplierRuntime, resolve_provider_config
 
 # API_TOKEN = "8351538881:AAE07EJufSQWVf5stZr0Y2P_oH7EgYuDjtc"
 API_TOKEN = "8306268191:AAFKK33VzWyAOXe1Zg38Dk8LJ5eGAuTcVs0"
@@ -26,6 +28,7 @@ SUPPLIER_BASE_URL = "https://sumistore.me/api"
 SUPPLIER_API_KEY = "TAPI-XD2CGJRB398MTAFBDYHO"
 CAPCUT_BASE_URL = "http://node12.zampto.net:20291/api"
 CAPCUT_API_KEY = "sk_4cc3773eeab08fc6c32aee2d4e0461f67b6a206077b5f818"
+DEFAULT_SUMISTORE_PROVIDER_CODE = "sumistore_default"
 
 bot = telebot.TeleBot(API_TOKEN)
 
@@ -121,8 +124,59 @@ def get_supplier_provider(product_like, fulfillment_mode=None):
     if resolved_mode is None:
         resolved_mode = product_like["fulfillment_mode"] if "fulfillment_mode" in product_like.keys() else None
     if resolved_mode == "supplier_api":
-        return "sumistore"
+        return DEFAULT_SUMISTORE_PROVIDER_CODE
     return None
+
+
+def get_supplier_provider_config(product_like, fulfillment_mode=None):
+    provider_code = get_supplier_provider(product_like, fulfillment_mode)
+    if not provider_code:
+        raise SupplierApiError("Supplier provider is not configured")
+    provider = product_repository.get_supplier_provider(provider_code)
+    if provider is None:
+        raise SupplierApiError("Supplier provider does not exist")
+    if not provider["is_active"]:
+        raise SupplierApiError("Supplier provider is inactive")
+    return provider
+
+
+def get_supplier_runtime(product_like, fulfillment_mode=None):
+    provider = get_supplier_provider_config(product_like, fulfillment_mode)
+    resolved = resolve_provider_config(provider)
+
+    def request_json(method, path, body=None):
+        if resolved["protocol"] == "sumistore":
+            client = SupplierApiClient(resolved["base_url"], resolved["api_key"])
+            if hasattr(client, "_request_json"):
+                return client._request_json(method, path, body)
+            if str(method).upper() == "GET" and path == resolved["balance_path"]:
+                return client.get_balance()
+            detail_prefix = resolved["product_detail_path_template"].split("{product_id}", 1)[0]
+            if str(method).upper() == "GET" and path.startswith(detail_prefix):
+                supplier_product_id = urllib.parse.unquote(path[len(detail_prefix):])
+                return client.get_product_detail(supplier_product_id)
+            if str(method).upper() == "POST" and path == resolved["buy_path"]:
+                return client.buy_product(
+                    body[resolved["buy_product_id_field"]],
+                    body[resolved["buy_quantity_field"]],
+                )
+            raise SupplierApiError("Unsupported supplier request mapping")
+
+        client = CapcutApiClient(resolved["base_url"], resolved["api_key"])
+        if hasattr(client, "_request_json"):
+            return client._request_json(method, path, body)
+        if str(method).upper() == "GET" and path == resolved["products_path"]:
+            return client.get_products()
+        if str(method).upper() == "GET" and path == resolved["balance_path"]:
+            return client.get_balance()
+        if str(method).upper() == "POST" and path == resolved["buy_path"]:
+            return client.buy_product(
+                body[resolved["buy_product_id_field"]],
+                body[resolved["buy_quantity_field"]],
+            )
+        raise CapcutApiError("Unsupported supplier request mapping")
+
+    return SupplierRuntime(provider, request_json=request_json)
 
 
 def get_supplier_unit_price(product_detail):
@@ -337,10 +391,10 @@ def get_runtime_product(product_id):
     sales_mode = product["sales_mode"] if "sales_mode" in product.keys() else "normal"
     available = counts["available"]
     if fulfillment_mode == "supplier_api":
-        if supplier_provider == "capcut_api":
-            available = get_capcut_available_units(supplier_product_id)
-        else:
-            available = get_supplier_available_units(supplier_product_id)
+        try:
+            available = get_supplier_runtime(product, fulfillment_mode).get_available_units(supplier_product_id)
+        except Exception:
+            available = 0
     return {
         "id": product["id"],
         "name": product["name"],
@@ -362,11 +416,6 @@ def get_runtime_product(product_id):
 def list_runtime_products(category_id=None):
     rows = shop_service.list_products_for_category(category_id)
     result = []
-    supplier_client = None
-    supplier_balance = None
-    capcut_client = None
-    capcut_balance = None
-    capcut_products = None
     for row in rows:
         counts = product_repository.count_stock_by_status(row["id"])
         fulfillment_mode = row["fulfillment_mode"] if "fulfillment_mode" in row.keys() else "local_stock"
@@ -375,43 +424,10 @@ def list_runtime_products(category_id=None):
         sales_mode = row["sales_mode"] if "sales_mode" in row.keys() else "normal"
         available = counts["available"]
         if fulfillment_mode == "supplier_api":
-            if supplier_provider == "capcut_api":
-                if capcut_client is None:
-                    try:
-                        capcut_client = get_capcut_client()
-                        capcut_balance = capcut_client.get_balance()
-                        capcut_products = capcut_client.get_products()
-                    except Exception:
-                        capcut_client = False
-                        capcut_balance = None
-                        capcut_products = None
-                available = (
-                    get_capcut_available_units(
-                        supplier_product_id,
-                        client=capcut_client if capcut_client is not False else None,
-                        balance_response=capcut_balance,
-                        products_response=capcut_products,
-                    )
-                    if capcut_client is not False
-                    else 0
-                )
-            else:
-                if supplier_client is None:
-                    try:
-                        supplier_client = get_supplier_client()
-                        supplier_balance = supplier_client.get_balance()
-                    except Exception:
-                        supplier_client = False
-                        supplier_balance = None
-                available = (
-                    get_supplier_available_units(
-                        supplier_product_id,
-                        client=supplier_client if supplier_client is not False else None,
-                        balance_response=supplier_balance,
-                    )
-                    if supplier_client is not False
-                    else 0
-                )
+            try:
+                available = get_supplier_runtime(row, fulfillment_mode).get_available_units(supplier_product_id)
+            except Exception:
+                available = 0
         result.append(
             {
                 "id": row["id"],
@@ -457,35 +473,8 @@ def check_supplier_purchase_ready(runtime_product, qty):
         return None
     if not runtime_product.get("supplier_product_id"):
         raise SupplierApiError("Supplier product is not configured")
-    provider = runtime_product.get("supplier_provider") or "sumistore"
-
-    if provider == "capcut_api":
-        client = get_capcut_client()
-        products_response = client.get_products()
-        product_detail = get_capcut_product(products_response, runtime_product["supplier_product_id"])
-        if int(product_detail.get("stock") or 0) < qty:
-            raise CapcutApiError("CapCut stock is not enough")
-        balance = client.get_balance()
-        required_amount = get_capcut_unit_price(product_detail) * qty
-        current_balance = int(balance.get("balance") or 0)
-        if current_balance < required_amount:
-            raise CapcutApiError("CapCut balance is not enough")
-        return product_detail
-
-    client = get_supplier_client()
-    detail = client.get_product_detail(runtime_product["supplier_product_id"])
-    product_detail = detail.get("product") or {}
-    if not product_detail.get("api_enabled"):
-        raise SupplierApiError("Supplier product is temporarily unavailable")
-    if int(product_detail.get("stock") or 0) < qty:
-        raise SupplierApiError("Supplier stock is not enough")
-
-    balance = client.get_balance()
-    required_amount = get_supplier_unit_price(detail) * qty
-    current_balance = int(balance.get("balance") or 0)
-    if current_balance < required_amount:
-        raise SupplierApiError("Supplier balance is not enough")
-    return detail
+    runtime = get_supplier_runtime(runtime_product, runtime_product.get("fulfillment_mode"))
+    return runtime.check_purchase_ready(runtime_product["supplier_product_id"], qty)
 
 
 def complete_paid_order(chat_id, order_id, payos_ref, amount_paid):
@@ -496,15 +485,9 @@ def complete_paid_order(chat_id, order_id, payos_ref, amount_paid):
 
     if runtime_product.get("fulfillment_mode") == "supplier_api":
         try:
-            provider = runtime_product.get("supplier_provider") or "sumistore"
-            if provider == "capcut_api":
-                client = get_capcut_client()
-                purchase = client.buy_product(runtime_product["supplier_product_id"], order["qty"])
-                accounts = extract_capcut_accounts(purchase)
-            else:
-                client = get_supplier_client()
-                purchase = client.buy_product(runtime_product["supplier_product_id"], order["qty"])
-                accounts = extract_supplier_accounts(purchase)
+            runtime = get_supplier_runtime(runtime_product, runtime_product.get("fulfillment_mode"))
+            purchase = runtime.buy_product(runtime_product["supplier_product_id"], order["qty"])
+            accounts = runtime.extract_delivered_accounts(purchase)
             if not accounts:
                 raise SupplierApiError("Supplier returned no accounts")
             delivered = shop_service.mark_supplier_payment_paid(order_id, payos_ref, amount_paid, accounts)
@@ -604,6 +587,7 @@ def show_admin_menu(chat_id, message_id=None):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("➕ Thêm sản phẩm mới", callback_data="admin_create_prod"))
     markup.add(InlineKeyboardButton("🗂️ Quản lý category", callback_data="admin_manage_categories"))
+    markup.add(InlineKeyboardButton("🔌 Quản lý Provider API", callback_data="admin_manage_providers"))
     markup.add(InlineKeyboardButton("🔄 Sync CapCut", callback_data="admin_sync_capcut"))
     markup.add(InlineKeyboardButton("⚙️ Cài đặt PayOS", callback_data="admin_config_payos"))
     markup.add(InlineKeyboardButton("🔎 Tra cứu đơn", callback_data="admin_lookup_order"))
@@ -642,6 +626,26 @@ def show_admin_menu(chat_id, message_id=None):
             )
 
     text = "🔑 BẢNG ĐIỀU KHIỂN ADMIN\nChọn sản phẩm để quản lý hoặc thêm mới:"
+    if message_id:
+        bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
+    else:
+        bot.send_message(chat_id, text, reply_markup=markup)
+
+
+def show_admin_provider_menu(chat_id, message_id=None):
+    markup = InlineKeyboardMarkup()
+    for provider in shop_service.list_supplier_providers():
+        status = "🟢" if provider["is_active"] else "⚪"
+        markup.row(
+            InlineKeyboardButton(
+                f"{status} {provider['name']} | {provider['protocol']}",
+                callback_data="noop",
+            ),
+            InlineKeyboardButton("🔁", callback_data=f"admin_toggleprovider_{provider['code']}"),
+        )
+    markup.add(InlineKeyboardButton("➕ Thêm provider", callback_data="admin_create_provider"))
+    markup.add(InlineKeyboardButton("🔙 Quay lại Admin", callback_data="admin_menu"))
+    text = "🔌 Provider API\nQuản lý danh sách provider có thể gán cho sản phẩm."
     if message_id:
         bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
     else:
@@ -982,15 +986,53 @@ def show_product_supplier_config(chat_id, message_id, product_id):
 
     mode_label = "Kho nội bộ" if runtime_product["fulfillment_mode"] == "local_stock" else "Supplier API"
     supplier_id = runtime_product.get("supplier_product_id") or "Chưa cấu hình"
+    provider_code = runtime_product.get("supplier_provider") or "Chưa cấu hình"
+    provider = None
+    if runtime_product.get("supplier_provider"):
+        provider = product_repository.get_supplier_provider(runtime_product["supplier_provider"])
+    provider_label = provider["name"] if provider is not None else provider_code
+    protocol_label = provider["protocol"] if provider is not None else "-"
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📦 Dùng kho nội bộ", callback_data=f"admin_suppliermode|{product_id}|local_stock"))
     markup.add(InlineKeyboardButton("🌐 Dùng Supplier API", callback_data=f"admin_suppliermode|{product_id}|supplier_api"))
+    markup.add(InlineKeyboardButton("🔌 Chọn provider", callback_data=f"admin_setsupplierprovider_{product_id}"))
     markup.add(InlineKeyboardButton("🔑 Đặt mã sản phẩm API", callback_data=f"admin_setsupplierid_{product_id}"))
     markup.add(InlineKeyboardButton("🔙 Quay lại sản phẩm", callback_data=f"admin_prod_{product_id}"))
     bot.edit_message_text(
         f"🌐 Cấu hình giao hàng cho **{runtime_product['name']}**\n"
         f"Chế độ hiện tại: **{mode_label}**\n"
+        f"Provider: `{provider_label}`\n"
+        f"Protocol: `{protocol_label}`\n"
         f"Supplier Product ID: `{supplier_id}`",
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=markup,
+        parse_mode="Markdown",
+    )
+
+
+def show_product_supplier_provider_picker(chat_id, message_id, product_id):
+    runtime_product = get_runtime_product(product_id)
+    if runtime_product is None:
+        bot.edit_message_text(
+            "❌ Sản phẩm không tồn tại!",
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        return
+
+    markup = InlineKeyboardMarkup()
+    for provider in shop_service.list_supplier_providers(include_inactive=False):
+        markup.add(
+            InlineKeyboardButton(
+                f"🔌 {provider['name']} | {provider['protocol']}",
+                callback_data=f"admin_applysupplierprovider|{product_id}|{provider['code']}",
+            )
+        )
+    markup.add(InlineKeyboardButton("🚫 Bỏ provider", callback_data=f"admin_applysupplierprovider|{product_id}|none"))
+    markup.add(InlineKeyboardButton("🔙 Quay lại cấu hình API", callback_data=f"admin_suppliercfg_{product_id}"))
+    bot.edit_message_text(
+        f"🔌 Chọn provider cho **{runtime_product['name']}**",
         chat_id=chat_id,
         message_id=message_id,
         reply_markup=markup,
@@ -1154,6 +1196,10 @@ def callback_query(call):
         show_admin_category_menu(chat_id, message_id=msg_id)
         return
 
+    if call.data == "admin_manage_providers":
+        show_admin_provider_menu(chat_id, message_id=msg_id)
+        return
+
     if call.data == "admin_sync_capcut":
         try:
             summary = sync_capcut_products_from_api()
@@ -1167,6 +1213,25 @@ def callback_query(call):
             )
         except Exception as exc:
             bot.send_message(chat_id, f"❌ Đồng bộ CapCut thất bại: {exc}")
+        return
+
+    if call.data == "admin_create_provider":
+        msg = bot.send_message(
+            chat_id,
+            "🔌 Nhập provider theo định dạng:\n`code | name | protocol | base_url | api_key`\n\nVí dụ:\n`node12 | Node12 | node_api | http://node12.zampto.net:20291/api | sk-xxx`",
+            parse_mode="Markdown",
+        )
+        bot.register_next_step_handler(msg, admin_process_create_supplier_provider)
+        return
+
+    if call.data.startswith("admin_toggleprovider_"):
+        provider_code = call.data.split("admin_toggleprovider_", 1)[1]
+        provider = product_repository.get_supplier_provider(provider_code)
+        if provider is None:
+            bot.answer_callback_query(call.id, "❌ Provider không tồn tại!", show_alert=True)
+            return
+        shop_service.set_supplier_provider_active(provider_code, not bool(provider["is_active"]))
+        show_admin_provider_menu(chat_id, message_id=msg_id)
         return
 
     if call.data.startswith("admin_category_"):
@@ -1377,6 +1442,10 @@ def callback_query(call):
         show_product_supplier_config(chat_id, msg_id, call.data.split("admin_suppliercfg_", 1)[1])
         return
 
+    if call.data.startswith("admin_setsupplierprovider_"):
+        show_product_supplier_provider_picker(chat_id, msg_id, call.data.split("admin_setsupplierprovider_", 1)[1])
+        return
+
     if call.data.startswith("admin_salesmodecfg_"):
         show_product_sales_mode_config(chat_id, msg_id, call.data.split("admin_salesmodecfg_", 1)[1])
         return
@@ -1405,6 +1474,13 @@ def callback_query(call):
             parse_mode="Markdown",
         )
         bot.register_next_step_handler(msg, admin_process_supplier_product_id, product_id)
+        return
+
+    if call.data.startswith("admin_applysupplierprovider|"):
+        _, product_id, provider_code = call.data.split("|", 2)
+        provider_value = None if provider_code == "none" else provider_code
+        shop_service.update_product_supplier_provider(product_id, provider_value)
+        show_product_supplier_config(chat_id, msg_id, product_id)
         return
 
     if call.data.startswith("admin_setcategory_"):
@@ -1681,6 +1757,33 @@ def admin_process_config_payos(message):
             "❌ Định dạng không đúng. Vui lòng nhập đúng: `CLIENT_ID | API_KEY | CHECKSUM_KEY`",
             parse_mode="Markdown",
         )
+
+
+def admin_process_create_supplier_provider(message):
+    if not message.text or "|" not in message.text:
+        bot.send_message(message.chat.id, "❌ Định dạng không đúng. Hủy tạo provider.")
+        return
+
+    parts = [part.strip() for part in str(message.text or "").split("|")]
+    if len(parts) < 4:
+        bot.send_message(
+            message.chat.id,
+            "❌ Định dạng không đúng. Vui lòng nhập: `code | name | protocol | base_url | api_key`",
+            parse_mode="Markdown",
+        )
+        return
+
+    code = parts[0]
+    name = parts[1]
+    protocol = parts[2]
+    base_url = parts[3]
+    api_key = parts[4] if len(parts) >= 5 else ""
+    provider = shop_service.create_supplier_provider(code, name, protocol, base_url, api_key)
+    bot.send_message(
+        message.chat.id,
+        f"✅ Đã tạo provider thành công:\nCode: `{provider['code']}`\nTên: {provider['name']}\nProtocol: `{provider['protocol']}`",
+        parse_mode="Markdown",
+    )
 
 
 def admin_process_create_prod(message):

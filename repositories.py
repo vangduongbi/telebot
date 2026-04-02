@@ -367,6 +367,187 @@ class Repository:
         finally:
             conn.close()
 
+    def create_supplier_provider(self, code, name, protocol, base_url, api_key, overrides_json, is_active=1):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO supplier_providers (
+                    code, name, protocol, base_url, api_key, overrides_json,
+                    is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    code,
+                    name,
+                    protocol,
+                    base_url,
+                    api_key,
+                    overrides_json,
+                    1 if is_active else 0,
+                    now,
+                    now,
+                ),
+            )
+            return conn.execute(
+                "SELECT * FROM supplier_providers WHERE code = ?",
+                (code,),
+            ).fetchone()
+
+    def get_supplier_provider(self, code):
+        conn = database.get_connection(self.db_path)
+        try:
+            return conn.execute(
+                """
+                SELECT *
+                FROM supplier_providers
+                WHERE code = ?
+                """,
+                (code,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def list_supplier_providers(self, include_inactive=True):
+        conn = database.get_connection(self.db_path)
+        try:
+            if include_inactive:
+                return conn.execute(
+                    """
+                    SELECT *
+                    FROM supplier_providers
+                    ORDER BY name, code
+                    """
+                ).fetchall()
+            return conn.execute(
+                """
+                SELECT *
+                FROM supplier_providers
+                WHERE is_active = 1
+                ORDER BY name, code
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def update_supplier_provider_name(self, code, name):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE supplier_providers
+                SET name = ?, updated_at = ?
+                WHERE code = ?
+                """,
+                (name, now, code),
+            )
+            return conn.execute(
+                "SELECT * FROM supplier_providers WHERE code = ?",
+                (code,),
+            ).fetchone()
+
+    def update_supplier_provider_protocol(self, code, protocol):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE supplier_providers
+                SET protocol = ?, updated_at = ?
+                WHERE code = ?
+                """,
+                (protocol, now, code),
+            )
+            return conn.execute(
+                "SELECT * FROM supplier_providers WHERE code = ?",
+                (code,),
+            ).fetchone()
+
+    def update_supplier_provider_base_url(self, code, base_url):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE supplier_providers
+                SET base_url = ?, updated_at = ?
+                WHERE code = ?
+                """,
+                (base_url, now, code),
+            )
+            return conn.execute(
+                "SELECT * FROM supplier_providers WHERE code = ?",
+                (code,),
+            ).fetchone()
+
+    def update_supplier_provider_api_key(self, code, api_key):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE supplier_providers
+                SET api_key = ?, updated_at = ?
+                WHERE code = ?
+                """,
+                (api_key, now, code),
+            )
+            return conn.execute(
+                "SELECT * FROM supplier_providers WHERE code = ?",
+                (code,),
+            ).fetchone()
+
+    def update_supplier_provider_overrides(self, code, overrides_json):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE supplier_providers
+                SET overrides_json = ?, updated_at = ?
+                WHERE code = ?
+                """,
+                (overrides_json, now, code),
+            )
+            return conn.execute(
+                "SELECT * FROM supplier_providers WHERE code = ?",
+                (code,),
+            ).fetchone()
+
+    def set_supplier_provider_active(self, code, is_active):
+        now = self._now()
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE supplier_providers
+                SET is_active = ?, updated_at = ?
+                WHERE code = ?
+                """,
+                (1 if is_active else 0, now, code),
+            )
+            return conn.execute(
+                "SELECT * FROM supplier_providers WHERE code = ?",
+                (code,),
+            ).fetchone()
+
+    def delete_supplier_provider(self, code):
+        with database.transaction(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM supplier_providers WHERE code = ?",
+                (code,),
+            )
+
+    def count_products_by_supplier_provider(self, code):
+        conn = database.get_connection(self.db_path)
+        try:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM products
+                WHERE supplier_provider = ?
+                """,
+                (code,),
+            ).fetchone()
+            return int(row["total"] or 0)
+        finally:
+            conn.close()
+
     def update_product_sales_mode(self, product_id, sales_mode):
         now = self._now()
         with database.transaction(self.db_path) as conn:

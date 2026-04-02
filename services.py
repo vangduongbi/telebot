@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 
@@ -6,6 +7,11 @@ import repositories
 
 
 class ShopService:
+    CAPCUT_COMPAT_PROVIDER_CODE = "capcut_default"
+    CAPCUT_COMPAT_PROVIDER_NAME = "CapCut Default"
+    CAPCUT_COMPAT_BASE_URL = "http://node12.zampto.net:20291/api"
+    CAPCUT_COMPAT_API_KEY = "sk_4cc3773eeab08fc6c32aee2d4e0461f67b6a206077b5f818"
+
     def __init__(self, db_path="shop.db"):
         self.repo = repositories.Repository(db_path)
 
@@ -23,6 +29,38 @@ class ShopService:
 
     def _contains_capcut(self, name):
         return "capcut" in str(name or "").casefold()
+
+    def _validate_supplier_provider_payload(self, code, name, protocol, base_url, overrides_json):
+        provider_code = str(code or "").strip()
+        provider_name = str(name or "").strip()
+        provider_protocol = str(protocol or "").strip()
+        provider_base_url = str(base_url or "").strip()
+        raw_overrides = "{}" if overrides_json is None else str(overrides_json).strip() or "{}"
+
+        if not provider_code:
+            raise ValueError("Provider code is required")
+        if not provider_name:
+            raise ValueError("Provider name is required")
+        if not provider_protocol:
+            raise ValueError("Provider protocol is required")
+        if provider_protocol not in {"sumistore", "node_api"}:
+            raise ValueError("Unsupported provider protocol")
+        if not provider_base_url:
+            raise ValueError("Provider base URL is required")
+        try:
+            parsed_overrides = json.loads(raw_overrides)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Invalid overrides JSON") from exc
+        if not isinstance(parsed_overrides, dict):
+            raise ValueError("Invalid overrides JSON")
+
+        return {
+            "code": provider_code,
+            "name": provider_name,
+            "protocol": provider_protocol,
+            "base_url": provider_base_url,
+            "overrides_json": json.dumps(parsed_overrides, separators=(",", ":")),
+        }
 
     def list_active_products(self):
         return self.repo.list_active_products()
@@ -172,9 +210,91 @@ class ShopService:
         product = self.repo.get_product(product_id)
         if product is None:
             raise ValueError("Product does not exist")
-        if supplier_provider not in {None, "sumistore", "capcut_api"}:
-            raise ValueError("Invalid supplier provider")
-        return self.repo.update_product_supplier_provider(product_id, supplier_provider)
+        provider_code = str(supplier_provider or "").strip() or None
+        if provider_code is None:
+            return self.repo.update_product_supplier_provider(product_id, None)
+        if self.repo.get_supplier_provider(provider_code) is None:
+            raise ValueError("Supplier provider does not exist")
+        return self.repo.update_product_supplier_provider(product_id, provider_code)
+
+    def list_supplier_providers(self, include_inactive=True):
+        return self.repo.list_supplier_providers(include_inactive=include_inactive)
+
+    def create_supplier_provider(self, code, name, protocol, base_url, api_key="", overrides_json="{}"):
+        payload = self._validate_supplier_provider_payload(code, name, protocol, base_url, overrides_json)
+        api_key_value = str(api_key or "").strip()
+        if self.repo.get_supplier_provider(payload["code"]) is not None:
+            raise ValueError("Supplier provider already exists")
+        return self.repo.create_supplier_provider(
+            payload["code"],
+            payload["name"],
+            payload["protocol"],
+            payload["base_url"],
+            api_key_value,
+            payload["overrides_json"],
+        )
+
+    def update_supplier_provider_name(self, code, name):
+        provider = self.repo.get_supplier_provider(str(code or "").strip())
+        if provider is None:
+            raise ValueError("Supplier provider does not exist")
+        provider_name = str(name or "").strip()
+        if not provider_name:
+            raise ValueError("Provider name is required")
+        return self.repo.update_supplier_provider_name(provider["code"], provider_name)
+
+    def update_supplier_provider_protocol(self, code, protocol):
+        provider = self.repo.get_supplier_provider(str(code or "").strip())
+        if provider is None:
+            raise ValueError("Supplier provider does not exist")
+        provider_protocol = str(protocol or "").strip()
+        if not provider_protocol:
+            raise ValueError("Provider protocol is required")
+        if provider_protocol not in {"sumistore", "node_api"}:
+            raise ValueError("Unsupported provider protocol")
+        return self.repo.update_supplier_provider_protocol(provider["code"], provider_protocol)
+
+    def update_supplier_provider_base_url(self, code, base_url):
+        provider = self.repo.get_supplier_provider(str(code or "").strip())
+        if provider is None:
+            raise ValueError("Supplier provider does not exist")
+        provider_base_url = str(base_url or "").strip()
+        if not provider_base_url:
+            raise ValueError("Provider base URL is required")
+        return self.repo.update_supplier_provider_base_url(provider["code"], provider_base_url)
+
+    def update_supplier_provider_api_key(self, code, api_key):
+        provider = self.repo.get_supplier_provider(str(code or "").strip())
+        if provider is None:
+            raise ValueError("Supplier provider does not exist")
+        return self.repo.update_supplier_provider_api_key(provider["code"], str(api_key or "").strip())
+
+    def update_supplier_provider_overrides(self, code, overrides_json):
+        provider = self.repo.get_supplier_provider(str(code or "").strip())
+        if provider is None:
+            raise ValueError("Supplier provider does not exist")
+        payload = self._validate_supplier_provider_payload(
+            provider["code"],
+            provider["name"],
+            provider["protocol"],
+            provider["base_url"],
+            overrides_json,
+        )
+        return self.repo.update_supplier_provider_overrides(provider["code"], payload["overrides_json"])
+
+    def set_supplier_provider_active(self, code, is_active):
+        provider = self.repo.get_supplier_provider(str(code or "").strip())
+        if provider is None:
+            raise ValueError("Supplier provider does not exist")
+        return self.repo.set_supplier_provider_active(provider["code"], is_active)
+
+    def delete_supplier_provider(self, code):
+        provider = self.repo.get_supplier_provider(str(code or "").strip())
+        if provider is None:
+            raise ValueError("Supplier provider does not exist")
+        if self.repo.count_products_by_supplier_provider(provider["code"]) > 0:
+            raise ValueError("Supplier provider is still in use")
+        self.repo.delete_supplier_provider(provider["code"])
 
     def get_resolved_product_description(self, product_id):
         product = self.repo.get_product(product_id)
@@ -193,6 +313,14 @@ class ShopService:
 
     def sync_capcut_products(self, api_products):
         category = self.ensure_category("Tài khoản CapCut")
+        if self.repo.get_supplier_provider(self.CAPCUT_COMPAT_PROVIDER_CODE) is None:
+            self.create_supplier_provider(
+                self.CAPCUT_COMPAT_PROVIDER_CODE,
+                self.CAPCUT_COMPAT_PROVIDER_NAME,
+                "node_api",
+                self.CAPCUT_COMPAT_BASE_URL,
+                self.CAPCUT_COMPAT_API_KEY,
+            )
         summary = {"created": 0, "updated": 0, "hidden": 0, "errors": []}
         seen_supplier_ids = set()
 
@@ -210,11 +338,11 @@ class ShopService:
                 continue
 
             seen_supplier_ids.add(supplier_product_id)
-            existing = self.repo.get_product_by_supplier_mapping("capcut_api", supplier_product_id)
+            existing = self.repo.get_product_by_supplier_mapping(self.CAPCUT_COMPAT_PROVIDER_CODE, supplier_product_id)
             if existing is None:
                 product = self.create_product(product_name, product_price)
                 self.update_product_fulfillment_mode(product["id"], "supplier_api")
-                self.update_product_supplier_provider(product["id"], "capcut_api")
+                self.update_product_supplier_provider(product["id"], self.CAPCUT_COMPAT_PROVIDER_CODE)
                 self.update_product_supplier_product_id(product["id"], supplier_product_id)
                 self.assign_product_category(product["id"], category["id"])
                 summary["created"] += 1
@@ -222,14 +350,14 @@ class ShopService:
 
             self.update_product_name(existing["id"], product_name)
             self.update_product_fulfillment_mode(existing["id"], "supplier_api")
-            self.update_product_supplier_provider(existing["id"], "capcut_api")
+            self.update_product_supplier_provider(existing["id"], self.CAPCUT_COMPAT_PROVIDER_CODE)
             self.update_product_supplier_product_id(existing["id"], supplier_product_id)
             self.assign_product_category(existing["id"], category["id"])
             if not existing["is_active"]:
                 self.reactivate_product(existing["id"])
             summary["updated"] += 1
 
-        for product in self.repo.list_products_by_supplier_provider("capcut_api"):
+        for product in self.repo.list_products_by_supplier_provider(self.CAPCUT_COMPAT_PROVIDER_CODE):
             supplier_product_id = product["supplier_product_id"]
             if supplier_product_id and supplier_product_id not in seen_supplier_ids and product["is_active"]:
                 self.deactivate_product(product["id"])
