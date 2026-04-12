@@ -1,3 +1,4 @@
+import json
 import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
@@ -26,6 +27,27 @@ class CapcutApiClientTests(unittest.TestCase):
         self.assertIn("GET", printed)
         self.assertIn("sk_t...1234", printed)
         self.assertNotIn("sk_test_key_1234", printed)
+
+    def test_get_products_logs_truncated_response_when_api_debug_enabled(self):
+        client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk_test_key_1234")
+        long_name = "CapCut-" + ("X" * 1500)
+
+        with patch.dict(capcut_api.os.environ, {"API_DEBUG": "1"}, clear=False), patch.object(
+            capcut_api.subprocess, "run"
+        ) as run_mock, patch("builtins.print") as print_mock:
+            run_mock.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps({"success": True, "products": [{"id": "cc_1", "name": long_name}]}),
+                stderr="",
+            )
+
+            client.get_products()
+
+        printed = "\n".join(" ".join(str(arg) for arg in call.args) for call in print_mock.call_args_list)
+        self.assertIn("[CapcutApiClient] response", printed)
+        self.assertIn('"products":[{"id":"cc_1","name":"CapCut-', printed)
+        self.assertIn("...(truncated)", printed)
 
     def test_get_products_falls_back_to_urllib_when_no_powershell_is_available(self):
         client = capcut_api.CapcutApiClient("http://node12.zampto.net:20291/api", "sk-test")

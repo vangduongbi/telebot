@@ -23,6 +23,39 @@ def _mask_secret(value):
     return f"{text[:4]}...{text[-4:]}"
 
 
+def _is_sensitive_debug_key(key):
+    normalized = "".join(ch for ch in str(key or "").lower() if ch.isalnum())
+    sensitive_tokens = ("apikey", "authorization", "token", "password", "passwd", "secret")
+    return any(token in normalized for token in sensitive_tokens)
+
+
+def _sanitize_debug_value(value, key_hint=None):
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if _is_sensitive_debug_key(key):
+                sanitized[key] = _mask_secret(item)
+            else:
+                sanitized[key] = _sanitize_debug_value(item, key)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_debug_value(item, key_hint) for item in value]
+    if _is_sensitive_debug_key(key_hint):
+        return _mask_secret(value)
+    return value
+
+
+def _render_debug_value(key, value, limit=1000):
+    sanitized = _sanitize_debug_value(value, key)
+    if isinstance(sanitized, (dict, list)):
+        rendered = json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
+    else:
+        rendered = str(sanitized)
+    if limit and len(rendered) > limit:
+        return f"{rendered[:limit]}...(truncated)"
+    return rendered
+
+
 def _debug_print(prefix, **fields):
     if not _api_debug_enabled():
         return
@@ -30,10 +63,7 @@ def _debug_print(prefix, **fields):
     for key, value in fields.items():
         if value is None:
             continue
-        if isinstance(value, (dict, list)):
-            rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        else:
-            rendered = str(value)
+        rendered = _render_debug_value(key, value)
         parts.append(f"{key}={rendered}")
     print(" ".join(parts))
 
@@ -144,6 +174,7 @@ class CapcutApiClient:
             url=url,
             success=data.get("success"),
             keys=sorted(data.keys()),
+            response=data,
         )
         return data
 
@@ -202,6 +233,7 @@ class CapcutApiClient:
             url=url,
             success=data.get("success"),
             keys=sorted(data.keys()),
+            response=data,
         )
         return data
 

@@ -1946,7 +1946,7 @@ def process_admin_add(message, product_id):
         counts = product_repository.count_stock_by_status(product_id)
         bot.send_message(
             message.chat.id,
-            f"✅ Đã thêm thành công {added_count} tài khoản vào kho.\n📦 Tồn kho hiện tại: {counts['total']}",
+            f"✅ Đã thêm thành công {added_count} tài khoản vào kho.\n📦 Tồn kho hiện tại: {counts['available']}",
         )
     else:
         bot.send_message(message.chat.id, "❌ Không tìm thấy thông tin tài khoản nào để thêm.")

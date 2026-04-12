@@ -27,6 +27,26 @@ class SupplierApiClientTests(unittest.TestCase):
         self.assertIn("TAPI...1234", printed)
         self.assertNotIn("TAPI-KEY-1234", printed)
 
+    def test_get_balance_logs_response_payload_when_api_debug_enabled(self):
+        client = supplier_api.SupplierApiClient("https://sumistore.me/api", "TAPI-KEY-1234")
+
+        with patch.dict(supplier_api.os.environ, {"API_DEBUG": "1"}, clear=False), patch.object(
+            supplier_api.subprocess, "run"
+        ) as run_mock, patch("builtins.print") as print_mock:
+            run_mock.return_value = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='{"success": true, "balance": 7000, "meta": {"currency": "VND"}}',
+                stderr="",
+            )
+
+            client.get_balance()
+
+        printed = "\n".join(" ".join(str(arg) for arg in call.args) for call in print_mock.call_args_list)
+        self.assertIn("[SupplierApiClient] response", printed)
+        self.assertIn('"balance":7000', printed)
+        self.assertIn('"meta":{"currency":"VND"}', printed)
+
     def test_get_balance_falls_back_to_urllib_when_no_powershell_is_available(self):
         client = supplier_api.SupplierApiClient("https://sumistore.me/api", "TAPI-KEY")
         response = MagicMock()
