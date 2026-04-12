@@ -544,6 +544,47 @@ class ProductRepositoryTests(SQLiteTestCase):
 
         self.assertIsNone(repo.get_product("prod_clean"))
 
+    def test_delete_available_stock_removes_only_available_rows(self):
+        repo = repositories.Repository(self.db_path)
+        repo.create_product("prod_1", "Product A", 100000)
+        stock_rows = repo.add_stock_items("prod_1", ["acct-1", "acct-2", "acct-3", "acct-4"], "batch-1")
+
+        sold_order = repo.create_order(
+            order_id="ORD-1",
+            order_code=1001,
+            user_id=42,
+            username="@buyer",
+            full_name="Buyer",
+            product_id="prod_1",
+            qty=1,
+            unit_price=100000,
+            total_amount=100000,
+            reserved_stock_item_ids=[stock_rows[0]["id"]],
+        )
+        repo.complete_paid_order(sold_order["id"], "PAY-1", 100000, [repo.list_reserved_stock_for_order(sold_order["id"])[0]])
+
+        repo.create_order(
+            order_id="ORD-2",
+            order_code=1002,
+            user_id=42,
+            username="@buyer",
+            full_name="Buyer",
+            product_id="prod_1",
+            qty=1,
+            unit_price=100000,
+            total_amount=100000,
+            reserved_stock_item_ids=[stock_rows[1]["id"]],
+        )
+
+        deleted_count = repo.delete_available_stock("prod_1")
+        counts = repo.count_stock_by_status("prod_1")
+
+        self.assertEqual(deleted_count, 2)
+        self.assertEqual(counts["available"], 0)
+        self.assertEqual(counts["reserved"], 1)
+        self.assertEqual(counts["sold"], 1)
+        self.assertEqual(counts["total"], 2)
+
     def test_add_stock_items_persists_one_row_per_content(self):
         repo = repositories.Repository(self.db_path)
         repo.create_product("prod_1", "Product A", 100000)

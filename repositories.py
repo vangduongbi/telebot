@@ -633,6 +633,17 @@ class Repository:
         with database.transaction(self.db_path) as conn:
             conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
 
+    def delete_available_stock(self, product_id):
+        with database.transaction(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM stock_items
+                WHERE product_id = ? AND status = 'available'
+                """,
+                (product_id,),
+            )
+            return cursor.rowcount
+
     def add_stock_items(self, product_id, contents, batch_id):
         if isinstance(contents, (str, bytes, bytearray)):
             raise ValueError("contents must be an iterable of stock item strings")

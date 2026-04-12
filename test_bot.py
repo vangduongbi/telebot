@@ -1266,6 +1266,15 @@ class SQLiteAdminFlowTests(unittest.TestCase):
         products = list(self.service.list_active_products())
         self.assertTrue(any(row["id"] == product["id"] for row in products))
 
+    def test_show_admin_menu_includes_delete_button_for_active_product(self):
+        product = self.service.create_product("Delete Me", "10.000d")
+
+        bot.show_admin_menu(123)
+
+        reply_markup = bot.bot.messages[0][2]["reply_markup"]
+        buttons = [button for row in reply_markup.keyboard for button in row]
+        self.assertTrue(any(button.callback_data == f"admin_deleteprod_{product['id']}" for button in buttons))
+
     def test_admin_update_sales_mode_to_contact_only(self):
         product = self.service.create_product("Contact Product", "30.000d")
         call = SimpleNamespace(
@@ -1360,6 +1369,79 @@ class SQLiteAdminFlowTests(unittest.TestCase):
         buttons = [button for row in markup.keyboard for button in row]
         self.assertIn("Mô tả riêng", text)
         self.assertTrue(any(button.callback_data == f"admin_editdesc_{product['id']}" for button in buttons))
+
+    def test_admin_product_detail_shows_clear_available_and_delete_buttons(self):
+        product = self.service.create_product("Detail Product", "10.000d")
+        call = SimpleNamespace(
+            data=f"admin_prod_{product['id']}",
+            id="cb2actions",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        markup = bot.bot.edits[0][3]["reply_markup"]
+        buttons = [button for row in markup.keyboard for button in row]
+        self.assertTrue(any(button.callback_data == f"admin_clearavailable_{product['id']}" for button in buttons))
+        self.assertTrue(any(button.callback_data == f"admin_deleteprod_{product['id']}" for button in buttons))
+
+    def test_admin_confirm_clear_available_removes_only_available_stock(self):
+        product = self.service.create_product("Detail Product", "10.000d")
+        self.service.add_product_stock(product["id"], "acc-1\nacc-2\nacc-3")
+        order = self.service.create_pending_order(
+            user_id=10,
+            username="@buyer",
+            full_name="Buyer",
+            product_id=product["id"],
+            qty=1,
+        )
+        self.service.mark_payment_paid(order["id"], "123456", 10000)
+        call = SimpleNamespace(
+            data=f"admin_confirmclearavailable_{product['id']}",
+            id="clearavailable1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        counts = self.repo.count_stock_by_status(product["id"])
+        self.assertEqual(counts["available"], 0)
+        self.assertEqual(counts["sold"], 1)
+        self.assertEqual(len(bot.bot.callback_answers), 1)
+        self.assertIn("2", bot.bot.callback_answers[0][1])
+
+    def test_admin_confirm_delete_product_removes_clean_product(self):
+        product = self.service.create_product("Clean Product", "10.000d")
+        call = SimpleNamespace(
+            data=f"admin_confirmdeleteprod_{product['id']}",
+            id="deleteprod1",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        self.assertIsNone(self.repo.get_product(product["id"]))
+        self.assertEqual(len(bot.bot.callback_answers), 1)
+        self.assertIn("đã xóa", bot.bot.callback_answers[0][1].lower())
+
+    def test_admin_confirm_delete_product_keeps_product_with_history(self):
+        product = self.service.create_product("Protected Product", "10.000d")
+        self.service.add_product_stock(product["id"], "acc-1")
+        call = SimpleNamespace(
+            data=f"admin_confirmdeleteprod_{product['id']}",
+            id="deleteprod2",
+            message=SimpleNamespace(chat=SimpleNamespace(id=123), message_id=1),
+            from_user=SimpleNamespace(id=1993247449),
+        )
+
+        bot.callback_query(call)
+
+        self.assertIsNotNone(self.repo.get_product(product["id"]))
+        self.assertEqual(len(bot.bot.callback_answers), 1)
+        self.assertIn("lịch sử", bot.bot.callback_answers[0][1].lower())
 
     def test_admin_process_edit_product_description_updates_sqlite(self):
         product = self.service.create_product("Detail Product", "10.000d")

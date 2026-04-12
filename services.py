@@ -157,6 +157,28 @@ class ShopService:
             "skipped_names": skipped_names,
         }
 
+    def clear_available_stock(self, product_id):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        return self.repo.delete_available_stock(product_id)
+
+    def delete_product(self, product_id):
+        product = self.repo.get_product(product_id)
+        if product is None:
+            raise ValueError("Product does not exist")
+        if self.repo.product_has_history(product_id):
+            return {
+                "deleted": False,
+                "product_name": product["name"],
+                "reason": "has_history",
+            }
+        self.repo.delete_product_hard(product_id)
+        return {
+            "deleted": True,
+            "product_name": product["name"],
+        }
+
     def create_product(self, name, price, description=""):
         product_name = str(name or "").strip()
         product_description = str(description or "").strip()

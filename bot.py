@@ -604,6 +604,7 @@ def show_admin_menu(chat_id, message_id=None):
                 callback_data=f"admin_prod_{product['id']}",
             ),
             InlineKeyboardButton("🙈", callback_data=f"admin_delprod_{product['id']}"),
+            InlineKeyboardButton("🗑️", callback_data=f"admin_deleteprod_{product['id']}"),
         )
 
     hidden_products = []
@@ -938,6 +939,56 @@ def show_category_products_delete_confirmation(chat_id, message_id, category_id)
         f"⚠️ Bạn có chắc muốn xóa cứng toàn bộ sản phẩm trong category **{category['name']}** không?\n"
         "Chỉ những sản phẩm chưa từng có lịch sử đơn hàng hoặc lịch sử kho mới bị xóa.\n"
         "Các sản phẩm còn lịch sử sẽ bị bỏ qua.",
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=markup,
+        parse_mode="Markdown",
+    )
+
+
+def show_product_clear_available_confirmation(chat_id, message_id, product_id):
+    runtime_product = get_runtime_product(product_id)
+    if runtime_product is None:
+        bot.edit_message_text(
+            "❌ Sản phẩm không tồn tại!",
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        return
+
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("✅ Xóa available", callback_data=f"admin_confirmclearavailable_{product_id}"),
+        InlineKeyboardButton("❌ Hủy", callback_data=f"admin_prod_{product_id}"),
+    )
+    bot.edit_message_text(
+        f"⚠️ Bạn có chắc muốn xóa toàn bộ tài khoản đang **available** của sản phẩm **{runtime_product['name']}** không?\n"
+        "Chỉ các tài khoản còn trống trong kho sẽ bị xóa. Tài khoản đã giữ hoặc đã bán sẽ được giữ nguyên.",
+        chat_id=chat_id,
+        message_id=message_id,
+        reply_markup=markup,
+        parse_mode="Markdown",
+    )
+
+
+def show_product_delete_confirmation(chat_id, message_id, product_id):
+    runtime_product = get_runtime_product(product_id)
+    if runtime_product is None:
+        bot.edit_message_text(
+            "❌ Sản phẩm không tồn tại!",
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+        return
+
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("✅ Xóa sản phẩm", callback_data=f"admin_confirmdeleteprod_{product_id}"),
+        InlineKeyboardButton("❌ Hủy", callback_data=f"admin_prod_{product_id}"),
+    )
+    bot.edit_message_text(
+        f"⚠️ Bạn có chắc muốn xóa sản phẩm **{runtime_product['name']}** không?\n"
+        "Chỉ sản phẩm chưa từng có lịch sử đơn hàng hoặc lịch sử kho mới bị xóa cứng.",
         chat_id=chat_id,
         message_id=message_id,
         reply_markup=markup,
@@ -1379,6 +1430,8 @@ def callback_query(call):
         markup.add(InlineKeyboardButton("🌐 Cấu hình API", callback_data=f"admin_suppliercfg_{product_id}"))
         markup.add(InlineKeyboardButton("✏️ Sửa tên", callback_data=f"admin_editname_{product_id}"))
         markup.add(InlineKeyboardButton("💲 Sửa giá tiền", callback_data=f"admin_editprice_{product_id}"))
+        markup.add(InlineKeyboardButton("🧹 Xóa hết available", callback_data=f"admin_clearavailable_{product_id}"))
+        markup.add(InlineKeyboardButton("🗑️ Xóa sản phẩm", callback_data=f"admin_deleteprod_{product_id}"))
         if runtime_product["active"]:
             markup.add(InlineKeyboardButton("🙈 Ẩn sản phẩm", callback_data=f"admin_delprod_{product_id}"))
         else:
@@ -1534,6 +1587,41 @@ def callback_query(call):
             parse_mode="Markdown",
         )
         bot.register_next_step_handler(msg, admin_process_edit_price, product_id)
+        return
+
+    if call.data.startswith("admin_clearavailable_"):
+        show_product_clear_available_confirmation(chat_id, msg_id, call.data.split("admin_clearavailable_", 1)[1])
+        return
+
+    if call.data.startswith("admin_confirmclearavailable_"):
+        product_id = call.data.split("admin_confirmclearavailable_", 1)[1]
+        if product_repository.get_product(product_id) is None:
+            bot.answer_callback_query(call.id, "❌ Sản phẩm không tồn tại.")
+            return
+        deleted_count = shop_service.clear_available_stock(product_id)
+        bot.answer_callback_query(call.id, f"✅ Đã xóa {deleted_count} tài khoản available.", show_alert=True)
+        show_admin_menu(chat_id, message_id=msg_id)
+        return
+
+    if call.data.startswith("admin_deleteprod_"):
+        show_product_delete_confirmation(chat_id, msg_id, call.data.split("admin_deleteprod_", 1)[1])
+        return
+
+    if call.data.startswith("admin_confirmdeleteprod_"):
+        product_id = call.data.split("admin_confirmdeleteprod_", 1)[1]
+        if product_repository.get_product(product_id) is None:
+            bot.answer_callback_query(call.id, "❌ Sản phẩm không tồn tại.")
+            return
+        summary = shop_service.delete_product(product_id)
+        if summary["deleted"]:
+            bot.answer_callback_query(call.id, f"✅ Đã xóa sản phẩm {summary['product_name']}.", show_alert=True)
+        else:
+            bot.answer_callback_query(
+                call.id,
+                "❌ Không thể xóa vì sản phẩm đã có lịch sử đơn hàng hoặc lịch sử kho.",
+                show_alert=True,
+            )
+        show_admin_menu(chat_id, message_id=msg_id)
         return
 
     if call.data.startswith("admin_delprod_"):

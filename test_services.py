@@ -243,6 +243,49 @@ class AdminProductServiceTests(SQLiteServiceTestCase):
         stored = repositories.Repository(self.db_path).get_product(product["id"])
         self.assertEqual(stored["description"], "Product override")
 
+    def test_clear_available_stock_removes_only_available_items(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Stocked", "30.000Ä‘")
+        service.add_product_stock(product["id"], "acc-1\nacc-2\nacc-3")
+        order = service.create_pending_order(
+            user_id=10,
+            username="@buyer",
+            full_name="Buyer",
+            product_id=product["id"],
+            qty=1,
+        )
+        service.mark_payment_paid(order["id"], "PAY-1", 30000)
+
+        deleted_count = service.clear_available_stock(product["id"])
+        counts = repositories.Repository(self.db_path).count_stock_by_status(product["id"])
+
+        self.assertEqual(deleted_count, 2)
+        self.assertEqual(counts["available"], 0)
+        self.assertEqual(counts["sold"], 1)
+        self.assertEqual(counts["reserved"], 0)
+
+    def test_delete_product_deletes_clean_product(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Clean", "30.000Ä‘")
+
+        summary = service.delete_product(product["id"])
+
+        self.assertTrue(summary["deleted"])
+        self.assertEqual(summary["product_name"], "Clean")
+        self.assertIsNone(repositories.Repository(self.db_path).get_product(product["id"]))
+
+    def test_delete_product_skips_product_with_history(self):
+        service = services.ShopService(self.db_path)
+        product = service.create_product("Stocked", "30.000Ä‘")
+        service.add_product_stock(product["id"], "acc-1")
+
+        summary = service.delete_product(product["id"])
+
+        self.assertFalse(summary["deleted"])
+        self.assertEqual(summary["product_name"], "Stocked")
+        self.assertEqual(summary["reason"], "has_history")
+        self.assertIsNotNone(repositories.Repository(self.db_path).get_product(product["id"]))
+
 
 class SupplierProviderServiceTests(SQLiteServiceTestCase):
     def test_create_supplier_provider_validates_required_fields(self):
